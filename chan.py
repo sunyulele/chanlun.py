@@ -1,6 +1,6 @@
 """
 # -*- coding: utf-8 -*-
-# @Time    : 2024/04/26 16:30
+# @Time    : 2024/04/28 16:45
 # @Author  : YuYuKunKun
 # @File    : chan.py
 """
@@ -776,7 +776,7 @@ class Bis:
             bi = Bi(0, last, fx, cklines[last.mid.index : fx.mid.index + 1])
             if bi.length > 4:
                 if bi.real_high is not last.mid:
-                    print("不是真顶")
+                    dp("    " * level, cmd, "不是真顶")
                     top = bi.real_high
                     new = FenXing(cklines[top.index - 1], top, cklines[top.index + 1])
                     assert new.shape is Shape.G, new
@@ -797,7 +797,7 @@ class Bis:
             bi = Bi(0, last, fx, cklines[last.mid.index : fx.mid.index + 1])
             if bi.length > 4:
                 if bi.real_low is not last.mid:
-                    print("不是真底")
+                    dp("    " * level, cmd, "不是真底")
                     bottom = bi.real_low
                     new = FenXing(cklines[bottom.index - 1], bottom, cklines[bottom.index + 1])
                     assert new.shape is Shape.D, new
@@ -834,8 +834,8 @@ class Bis:
 
                         new = FenXing(cklines[bottom.index - 1], bottom, cklines[bottom.index + 1])
                         assert new.shape is Shape.D, new
+                        dp("    " * level, cmd, "GS修正")
                         self.analysis(new, cklines, level + 1)  # 处理新底
-                        print("GS修正")
 
         elif last.shape is Shape.D and fx.shape is Shape.X:
             if last.speck > right.low:
@@ -866,8 +866,8 @@ class Bis:
                         self.__pop(tmp, level)
                         new = FenXing(cklines[top.index - 1], top, cklines[top.index + 1])
                         assert new.shape is Shape.G, new
+                        dp("    " * level, cmd, "DX修正")
                         self.analysis(new, cklines, level + 1)  # 处理新顶
-                        print("DX修正")
 
         elif last.shape is Shape.G and fx.shape is Shape.G:
             if last.speck < fx.speck:
@@ -889,9 +889,9 @@ class Bis:
                         self.__pop(tmp, level)
                         new = FenXing(cklines[bottom.index - 1], bottom, cklines[bottom.index + 1])
                         assert new.shape is Shape.D, new
+                        dp("    " * level, cmd, "GG修正")
                         self.analysis(new, cklines, level + 1)  # 处理新底
                         self.analysis(fx, cklines, level + 1)  # 再处理当前顶
-                        print("GG修正")
                         return
 
                 if not fxs:
@@ -921,9 +921,9 @@ class Bis:
                         self.__pop(tmp, level)
                         new = FenXing(cklines[top.index - 1], top, cklines[top.index + 1])
                         assert new.shape is Shape.G, new
+                        dp("    " * level, cmd, "DD修正")
                         self.analysis(new, cklines, level + 1)  # 处理新顶
                         self.analysis(fx, cklines, level + 1)  # 再处理当前底
-                        print("DD修正")
                         return
 
                 if not fxs:
@@ -966,7 +966,6 @@ class Duan:
             raise ChanException(self.start, self.end)
 
         self.features: list[Union[FeatureSequence, None]] = [None, None, None]
-        # self.pre = None
         self.info = []
 
     def __str__(self):
@@ -976,33 +975,15 @@ class Duan:
         return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None})"
 
     def __setattr__(self, name, value):
-        state = None
-        if hasattr(self, "pre") and hasattr(self, "direction"):
-            if self.pre is not None:
-                state = "老阳" if self.direction is Direction.Down else "老阴"
-            else:
-                state = "少阳" if self.direction is Direction.Up else "少阴"
-
-        if not hasattr(self, name):
-            object.__setattr__(self, name, value)
-            return
-        else:
-            if self.done:
-                dp(state, "线段已完成 修改前", name, getattr(self, name), "修改后", value)
-                if name != "done":
-                    raise ChanException("尝试修改以完成线段")
-            object.__setattr__(self, name, value)
+        object.__setattr__(self, name, value)
 
     def __getattribute__(self, name):
         value = object.__getattribute__(self, name)
         return value
 
-    def get_raw_bars_bytes(self, raw_bars: List[RawBar]) -> bytes:
-        bytes_data = b""
-        for raw in raw_bars:
-            if self.start.left._dt <= raw.dt <= self.end.right.dt:
-                bytes_data += bytes(raw)
-        return bytes_data
+    @property
+    def lmr(self) -> tuple[bool, bool, bool]:
+        return self.left is not None, self.mid is not None, self.right is not None
 
     @property
     def state(self) -> States:
@@ -1012,16 +993,24 @@ class Duan:
             return "少阳" if self.direction is Direction.Up else "少阴"
 
     @property
+    def left(self) -> "FeatureSequence":
+        return self.features[0]
+
+    @property
+    def mid(self) -> "FeatureSequence":
+        return self.features[1]
+
+    @property
+    def right(self) -> "FeatureSequence":
+        return self.features[2]
+
+    @property
     def high(self) -> float:
         return max(self.start.speck, self.end.speck)
 
     @property
     def low(self) -> float:
         return min(self.start.speck, self.end.speck)
-
-    @property
-    def mid(self) -> float:
-        return (self.start.speck + self.end.speck) / 2
 
     @classmethod
     def new(cls, index, obj):
@@ -1040,28 +1029,6 @@ class Duan:
             {"xd": self.end.speck, "dt": self.end.dt},
         ]
 
-    def clear(self):
-        self.features = [None, None, None]
-        self.pre = None
-        self.done = False
-        self.elements = []
-        self.start = None
-        self.end = None
-        self.direction = None
-
-    def check(self) -> bool:
-        left, mid, right = self.features
-        if left:
-            if not left.elements:
-                raise ChanException("左特征为空")
-        if mid:
-            if not mid.elements:
-                raise ChanException("中特征为空")
-        if right:
-            if not right.elements:
-                raise ChanException("右特征为空")
-        return True
-
     def append_element(self, bi: Bi):
         if self.elements[-1].end is bi.start:
             self.elements.append(bi)
@@ -1076,7 +1043,7 @@ class Duan:
         else:
             raise ChanException("线段弹出元素时，元素不匹配")
 
-    def set_done(self, fx: FenXing, state: States):
+    def set_done(self, fx: FenXing):
         elements = []
         for obj in self.elements:
             if elements:
@@ -1084,20 +1051,7 @@ class Duan:
             if obj.start is fx:
                 elements.append(obj)
         self.end = fx
-
-        if not elements:
-            dp("Duan.set_done 没有数据", state)
-            # return elements
-
-        for i in range(len(elements)):
-            self.elements.pop()
-
-        if self.elements[-1].end is not fx:
-            raise ChanException("线段结束时，元素不匹配", self.elements[-1].end, fx)
-
-        self.pre = None
         self.done = True
-        # dp("Duan.set_done 完成线段", state, self)
         return elements
 
     def is_next(self, obj: "Self") -> bool:
@@ -1107,14 +1061,14 @@ class Duan:
 
     @staticmethod
     def pop(duans: List["Duan"], duan: "Duan"):
-        # print("弹出段", duan)
+        ddp(colored("弹出段", "blue"), duan.state, duan)
         if duans[-1] is duan:
             return duans.pop()
         raise
 
     @staticmethod
     def append(duans: List["Duan"], duan: "Duan"):
-        # print("添加段", duan)
+        ddp(colored("添加段", "green"), duan.state, duan)
         if duans:
             last = duans[-1]
             if last.end is duan.start:
@@ -1152,392 +1106,199 @@ class Duans:
 
     def pop(self, bi, level=0):
         ddp()
-        handler = self._handler
-        duans = self.__duans
+        handler: "ZhongShus" = self._handler
+        duans: List[Duan] = self.__duans
         cmd = "Duans.POP"
 
-        duan = duans[-1]
-        last = duan.pre
-        flag = last is not None
-        if duan.done:
-            dp("    " * level, cmd, colored("修改已完成的线段", "red"))
-            duan.done = False
-        if flag:
-            state = "老阳" if duan.direction is Direction.Down else "老阴"
-            if last.elements[-1] is bi:
-                last.pop_element(bi)
-            else:
-                ddp("    " * level, cmd, state, "数据弹出异常", last.elements, bi)
-                raise ChanException("数据弹出异常", last.elements[-1], bi)
-        else:
-            state = "少阳" if duan.direction is Direction.Up else "少阴"
-
-        duan.pop_element(bi)
-
-        if not duan.elements:
-            Duan.pop(duans, duan)
-            dp("要删除中枢元素4", duan)
-            handler is not None and handler.pop(duan)
-            if state in ("老阳", "老阴"):
-                left, mid, right = last.features
-                if right.elements[-1] is bi:
-                    right.elements.pop()
-                    if not right.elements:
-                        dp("要删除中枢元素3", last)
-                        last.done and handler is not None and handler.pop(last)
-                        last.features = [left, mid, None]
-                    else:
-                        raise ChanException("有数据？？")
-                    last.done = False
-                    ddp("    " * level, cmd, state, "当前弹出的[笔]涉及上一[段]的特征序列，并修改特征序列")
-            ddp("    " * level, cmd, state, "当前段为空 弹出返回")
-            return
-
-        if duan.direction is bi.direction:
-            ddp("    " * level, cmd, state, "方向相同", bi)
-            if state in ("老阳", "老阴"):
-                left, mid, right = last.features
-                if right.elements[-1] is bi:
-                    right.elements.pop()
-                    if not right.elements:
-                        last.done and handler is not None and handler.pop(last)
-                        if last.done:
-                            last.done = False
-                        last.features = [left, mid, None]
-                        Duan.pop(duans, duan)
-                        ddp("    " * level, cmd, state, colored("警告: 当前弹出的[笔]涉及上一[段]的特征序列，弹出当前[段]并修改特征序列", "blue"))
-                    else:
-                        raise ChanException("有数据？？")
-                    last.done = False
-                    ddp("    " * level, cmd, state, "当前弹出的[笔]涉及上一[段]的特征序列，修改后的特征序列: ", right.elements)
-                    ddp("    " * level, "    当前[段]的元素: ", duan.elements)
-                    ddp("    " * level, "    上一[段]的元素: ", last.elements)
-            return
-
+        duan: Duan = duans[-1]
+        state: States = duan.state
+        last: Optional[Duan] = duan.pre
+        last = duans[-2] if len(duans) > 1 else last
         left: Optional[FeatureSequence] = duan.features[0]
         mid: Optional[FeatureSequence] = duan.features[1]
         right: Optional[FeatureSequence] = duan.features[2]
-        lmr: Tuple[bool, bool, bool] = (left is not None, mid is not None, right is not None)
+        lmr: Tuple[bool, bool, bool] = duan.lmr
 
-        ddp(
-            "    " * level,
-            cmd,
-            state,
-            lmr,
-            "Duan:",
-            duan.direction,
-            "Bi:",
-            bi.direction,
-        )
+        ddp("    " * level, cmd, state, lmr, duan, bi)
         ddp("    " * level, duan.features)
-        features = FeatureSequence.analysis(duan.elements, bi.direction)
+        ddp("    " * level, duan.elements)
 
-        if lmr == (True, False, False):
-            assert left.elements.pop() is bi
-            if not left.elements:
+        duan.pop_element(bi)
+
+        if last is not None:
+            if (last.right and bi in last.right) or (last.right is None and bi in last.left):
+                Duan.pop(duans, duan)
+                last.pop_element(bi)
+                last.features = [last.left, last.mid, None]
+                return
+
+        if lmr == (False, False, False):
+            if len(duan.elements) >= 1:
+                raise ChanException("线段中有多个元素，但特征序列为空")
+            Duan.pop(duans, duan)
+            if last is not None:
+                last.pop_element(bi)
+
+        elif lmr == (True, False, False):
+            if duan.direction is bi.direction:
+                return
+
+            left.remove(bi)
+            if not left:
                 duan.features = [None, None, None]
-                if len(features) >= 1:
-                    if features[-1] == left:
-                        duan.features = [features[-1], None, None]
-                        dp("    " * level, cmd, state, "修正1")
-                    else:
-                        dp("    " * level, cmd, state, "无法修正1", features)
 
         elif lmr == (True, True, False):
-            assert mid.elements.pop() is bi
-            if not mid.elements:
+            if duan.direction is bi.direction:
+                return
+            features = FeatureSequence.analysis(duan.elements, duan.elements[0])
+            mid.remove(bi)
+            if not mid:
                 duan.features = [left, None, None]
-                if len(features) >= 2:
-                    if features[-1] == left:
-                        duan.features = [features[-2], features[-1], None]
-                        dp("    " * level, cmd, state, "修正2")
-                    else:
-                        dp("    " * level, cmd, state, "无法修正2", features)
+            else:
+                duan.features = [left, mid, None]
+            if len(features) >= 2:
+                if left in features:
+                    ddp("    " * level, cmd, state, "第二特征序列 修正", features)
+                    duan.features = [features[-2], features[-1], None]
 
         elif lmr == (True, True, True):
-            assert right.elements.pop() is bi
-            if not right.elements:
-                duan.features = [left, mid, None]
-                ddp("    " * level, cmd, state, "特征序列", features)
-                if len(features) >= 3:
-                    shape, (lm, mr) = triple_relation(features[-3], features[-2], features[-1])
-                    ddp("    " * level, cmd, state, "关系", shape, lm, mr)
-                    if features[-1] == mid:
-                        duan.features = [features[-3], features[-2], features[-1]]
-                        dp("    " * level, cmd, state, "修正3")
-                    else:
-                        dp("    " * level, cmd, state, "无法修正3", features)
+            if duan.direction is bi.direction:
+                return
+            right.remove(bi)
+            if right:
+                raise ChanException("右侧特征序列不为空")
+            duan.features = [left, mid, None]
 
         else:
-            raise ChanException("无法匹配的关系", lmr)
-        ddp("    " * level, cmd, state, "end", duan.features)
-
-        duan.check()
+            raise ChanException("未知的状态", state, lmr)
 
     def push(self, bi: Bi, level=0):
         ddp()
         handler: "ZhongShus" = self._handler
         duans: List[Duan] = self.__duans
-        feature: FeatureSequence = FeatureSequence.new(bi)
         cmd = "Duans.PUSH"
         if not duans:
-            duan = Duan.new(0, bi)
-            duans.append(duan)
-            duan.features = [None, None, None]
-            ddp("    " * level, cmd, "首次创建新段")
+            duans.append(Duan.new(0, bi))
             return
 
         duan: Duan = duans[-1]
+        state: States = duan.state
         last: Optional[Duan] = duan.pre
-        flag: bool = last is not None
+        # last = duans[-2] if len(duans) > 1 else last
         left: Optional[FeatureSequence] = duan.features[0]
         mid: Optional[FeatureSequence] = duan.features[1]
-        right: Optional[FeatureSequence] = duan.features[2]
-        lmr: Tuple[bool, bool, bool] = (left is not None, mid is not None, right is not None)
+        # right: Optional[FeatureSequence] = duan.features[2]
+        lmr: Tuple[bool, bool, bool] = duan.lmr
 
-        if flag:
-            state = "老阳" if duan.direction is Direction.Down else "老阴"
-        else:
-            state = "少阳" if duan.direction is Direction.Up else "少阴"
-
-        ddp("    " * level, cmd, state, lmr, bi)
+        ddp("    " * level, cmd, state, lmr, duan, bi)
         ddp("    " * level, duan.features)
         ddp("    " * level, duan.elements)
 
         duan.append_element(bi)
-        if flag:
-            last.append_element(bi)
-
         if duan.direction is bi.direction:
-            ddp("    " * level, cmd, state, "方向相同, 无需分析")
+            ddp("    " * level, "方向相同, 更新结束点")
+            duan.end = bi.end
             return
 
+        feature = FeatureSequence.new(bi)
         if lmr == (False, False, False):
             duan.features = [feature, None, None]
 
         elif lmr == (True, False, False):
             relation = double_relation(left, bi)
-            ddp("    " * level, cmd, state, "第二特征序列左中关系", relation)
+            ddp("    " * level, "第二特征序列", relation)
             if relation is Direction.Left:
-                # 顺序包含
-                if bi not in left.elements:
-                    left.elements.append(bi)
-
+                left.add(bi)
             elif relation is Direction.Right:
-                if state == "老阳":
-                    if bi.high > last.high:
-                        # 向上一笔突破前高, 且为第二特征序列
-                        ddp("    " * level, cmd, state, "特殊处理, 线段是否完成：", last.done)
-                        last.done = False
-                        last.features = [last.features[-2], last.features[-1], None]
-                        Duan.pop(duans, duan)
-                        handler is not None and handler.pop(last)
-                        duan.clear()
-                        ddp("    " * level, cmd, state, "弹出 清空")
-                    else:
-                        if bi not in left.elements:
-                            left.elements.append(bi)
-                elif state == "老阴":
-                    if bi.low < duan.pre.features[1].low:
-                        # 向下一笔突破前低, 且为第二特征序列
-                        ddp("    " * level, cmd, state, "特殊处理, 线段是否完成：", last.done)
-                        last.done = False
-                        duan.pre.features = [last.features[-2], last.features[-1], None]
-                        Duan.pop(duans, duan)
-                        handler is not None and handler.pop(last)
-                        duan.clear()
-                        ddp("    " * level, cmd, state, "弹出 清空")
-                    else:
-                        if bi not in left.elements:
-                            left.elements.append(bi)
-                elif state == "少阳" or state == "少阴":
-                    duan.features = [left, feature, None]
-                else:
-                    raise ChanException("无法匹配的状态", lmr, relation, state)
-
-            elif relation in (Direction.Down, Direction.JumpDown):
-                if state == "老阳" or state == "少阴":
-                    duan.features = [left, feature, None]
-                    duan.end = feature.start
-                elif state == "老阴":
-                    ddp("    " * level, cmd, state, "线段是否完成：", last.done)
-                    last.done = False
-                    last.features = [last.features[-3], last.features[-2], None]
-                    Duan.pop(duans, duan)
-                    handler is not None and handler.pop(last)
-                    duan.clear()
-                    ddp("    " * level, cmd, state, "弹出 清空")
-                elif state == "少阳":
-                    """此处有待商榷
-                         1. 前面有线段,
-                         2. 前面无线段
-                    """
-                    duan.features = [left, feature, None]
-                    duan.end = feature.start
-
-                else:
-                    raise ChanException("无法匹配的状态", lmr, relation, state)
+                duan.features = [left, feature, None]
 
             elif relation in (Direction.Up, Direction.JumpUp):
-                if state == "老阳":
-                    # 第二特征序列
-                    dp("    " * level, cmd, state, "线段是否完成：", last.done)
-                    last.done = False
-                    last.features = [last.features[-3], last.features[-2], None]
-                    Duan.pop(duans, duan)
-                    handler is not None and handler.pop(last)
-                    duan.clear()
-                    ddp("    " * level, cmd, state, "弹出 清空")
-                elif state == "老阴" or state == "少阳":
+                if duan.direction is Direction.Up:
                     duan.features = [left, feature, None]
-                    duan.end = feature.start
-
-                elif state == "少阴":
-                    """此处有待商榷
-                        1. 前面有线段,
-                        2. 前面无线段
-                    """
-                    duan.features = [left, feature, None]
-                    duan.end = feature.start
-
                 else:
-                    raise ChanException("无法匹配的状态", lmr, relation, state)
+                    # Down
+                    duan.end = bi.start
+                    new = Duan.new(duan.index + 1, bi)
+                    Duan.append(duans, new)
+
+            elif relation in (Direction.Down, Direction.JumpDown):
+                if duan.direction is Direction.Down:
+                    duan.features = [left, feature, None]
+                else:
+                    # Up
+                    duan.end = bi.start
+                    new = Duan.new(duan.index + 1, bi)
+                    Duan.append(duans, new)
 
             else:
-                duan.features[1] = feature
+                raise ChanException("未知的关系", relation)
 
         elif lmr == (True, True, False):
             relation = double_relation(mid, bi)
-            ddp("    " * level, cmd, state, "第三特征序列中右关系", relation)
+            ddp("    " * level, "第三特征序列", relation)
             if relation is Direction.Left:
-                if bi not in mid.elements:
-                    mid.elements.append(bi)
+                mid.add(bi)
 
             elif relation is Direction.Right:
-                if state == "老阳" or state == "老阴":
-                    if bi not in mid.elements:
-                        mid.elements.append(bi)
-
-                elif state == "少阳":
-                    if mid.high == bi.high:
-                        # 终结
-                        duan.features = [left, mid, feature]
-                        mid.shape = Shape.G
-                        start = mid.start
-                        elements = duan.set_done(start, state)
-                        handler is not None and handler.push(duan)
-                        assert duan.direction is not elements[0].direction
-                        new = Duan.new(duan.index + 1, elements[0])
-                        Duan.append(duans, new)
-                        for obj in elements[1:]:
-                            self.push(obj, level + 1)
-                        if new.elements[1]:
-                            new.end = new.elements[1].start
-                        ddp("    " * level, "特殊终结")
-
-                    else:
-                        duan.features = [mid, feature, None]
-                        duan.end = feature.start
-
-                elif state == "少阴":
-                    if mid.low == bi.low:
-                        # 终结
-                        duan.features = [left, mid, feature]
-                        mid.shape = Shape.D
-                        start = mid.start
-                        elements = duan.set_done(start, state)
-                        handler is not None and handler.push(duan)
-                        assert duan.direction is not elements[0].direction
-                        new = Duan.new(duan.index + 1, elements[0])
-                        Duan.append(duans, new)
-                        for obj in elements[1:]:
-                            self.push(obj, level + 1)
-                        if new.elements[1]:
-                            new.end = new.elements[1].start
-                        ddp("    " * level, "特殊终结")
-                    else:
-                        duan.features = [mid, feature, None]
-                        duan.end = feature.start
-                else:
-                    raise ChanException("无法匹配的状态", lmr, relation, state)
-
-            elif relation in (Direction.Down, Direction.JumpDown):
-                if state == "老阳" or state == "少阴":
-                    duan.features = [mid, feature, None]
-                elif state == "老阴" or state == "少阳":
-                    duan.features = [left, mid, feature]
-                    mid.shape = Shape.G
-                    start = mid.start
-                    elements = duan.set_done(start, state)
-                    handler is not None and handler.push(duan)
-                    assert duan.direction is not elements[0].direction
-                    new = Duan.new(duan.index + 1, elements[0])
-                    Duan.append(duans, new)
-                    # handler is not None and handler.push(new)
-                    for obj in elements[1:]:
-                        self.push(obj, level + 1)
-                    if new.elements[1]:
-                        new.end = new.elements[1].start
-
-                    t = "终结"
-                    if double_relation(left, mid) is Direction.JumpUp:
-                        new.pre = duan
-                        for obj in elements:
-                            duan.append_element(obj)
-                        # duan.elements.extend(elements)
-                        t = "缺口"
-                    ddp("    " * level, cmd, state, "顶分型,", t)
-
-                else:
-                    raise ChanException("无法匹配的状态", lmr, relation, state)
+                duan.features = [mid, feature, None]
 
             elif relation in (Direction.Up, Direction.JumpUp):
-                if state == "老阳" or state == "少阴":
-                    duan.features = [left, mid, feature]
-                    mid.shape = Shape.D
-                    start = mid.start
-                    elements = duan.set_done(start, state)
-                    handler is not None and handler.push(duan)
-                    assert duan.direction is not elements[0].direction
-                    new = Duan.new(duan.index + 1, elements[0])
-                    Duan.append(duans, new)
-                    # handler is not None and handler.push(new)
-                    for obj in elements[1:]:
-                        self.push(obj, level + 1)
-                    if new.elements[1]:
-                        new.end = new.elements[1].start
-
-                    t = "终结"
-                    if double_relation(left, mid) is Direction.JumpDown:
-                        new.pre = duan
-                        for obj in elements:
-                            duan.append_element(obj)
-                        # duan.elements.extend(elements)
-                        t = "缺口"
-                    ddp("    " * level, cmd, state, "底分型,", t)
-
-                elif state == "老阴" or state == "少阳":
+                if duan.direction is Direction.Up:
                     duan.features = [mid, feature, None]
-                    duan.end = feature.start
-
                 else:
-                    raise ChanException("无法匹配的状态", lmr, relation, state)
+                    # Down, 底分型
+                    duan.features = [left, mid, feature]
+                    duan.done = True
+                    elements = duan.set_done(mid.start)
+                    new = Duan.new(duan.index + 1, elements[0])
+                    new.elements = elements
+                    if double_relation(left, mid) is Direction.JumpUp:
+                        duan.pre = new
+                    features = FeatureSequence.analysis(elements, elements[1].direction)
+                    if features:
+                        new.features = [features[-1], None, None]
+                        if len(features) > 1:
+                            new.features = [features[-2], features[-1], None]
+                    Duan.append(duans, new)
+
+            elif relation in (Direction.Down, Direction.JumpDown):
+                if duan.direction is Direction.Down:
+                    duan.features = [mid, feature, None]
+                else:
+                    # Up, 顶分型
+                    duan.features = [left, mid, feature]
+                    duan.done = True
+                    elements = duan.set_done(mid.start)
+                    new = Duan.new(duan.index + 1, elements[0])
+                    new.elements = elements
+                    if double_relation(left, mid) is Direction.JumpUp:
+                        duan.pre = new
+                    features = FeatureSequence.analysis(elements, elements[1].direction)
+                    if features:
+                        new.features = [features[-1], None, None]
+                        if len(features) > 1:
+                            new.features = [features[-2], features[-1], None]
+                    Duan.append(duans, new)
 
             else:
-                raise ChanException
+                raise ChanException("未知的关系", relation)
 
         else:
-            raise ChanException("无法匹配的状态", lmr, state)
+            raise ChanException("未知的状态", state, lmr)
 
-        left, mid, right = duan.features
-        if left and mid:
-            if double_relation(left, mid) is Direction.Left:
-                ddp("左中关系错误")
 
-        # ddp("    " * level, cmd, state, "end features", duan.features)
-        # ddp("    " * level, cmd, state, "end duan", duans[-1])
-        # dp("    " * level, cmd, state, "end, duans", self[-3:])
-        # dp("    " * level, cmd, state, "end, Zhongshu", handler)
+class JHLDuans(Duans):
+    __slots__ = "__duans", "__bis", "_handler"
+
+    def __init__(self, bis: Optional[List[Bi]], duans: Optional[List[Duan]], handler: Optional["ZhongShus"]):
+        if bis is None:
+            bis = []
+        if duans is None:
+            duans = []
+        self.__duans: List[Duan] = duans
+        self.__bis: List[Bi] = bis
+        self._handler: "ZhongShus" = handler
+        super().__init__(bis, duans, handler)
 
 
 @charts_id_
@@ -1750,40 +1511,56 @@ class ZouShi:
     body: List[Union[PanZheng, Duan, Bi]]
 
 
-@dataclass
 class FeatureSequence:
-    elements: List
-    direction: Direction
-    shape: Shape = None
-    index: int = 0
+    def __init__(self, elements: set, direction: Direction):
+        self.__elements: set = elements
+        self.direction: Direction = direction
+        self.shape: Optional[Shape] = None
+        self.index = 0
 
     def __str__(self):
-        if not self.elements:
+        if not self.__elements:
             return f"空特征序列({self.direction})"
-        return f"特征序列({self.direction}, {self.start.dt}, {self.end.dt}, {len(self.elements)})"
+        return f"特征序列({self.direction}, {self.start.dt}, {self.end.dt}, {len(self.__elements)})"
 
     def __repr__(self):
-        if not self.elements:
+        if not self.__elements:
             return f"空特征序列({self.direction})"
-        return f"特征序列({self.direction}, {self.start.dt}, {self.end.dt}, {len(self.elements)})"
+        return f"特征序列({self.direction}, {self.start.dt}, {self.end.dt}, {len(self.__elements)})"
+
+    def __len__(self):
+        return len(self.__elements)
+
+    def __iter__(self):
+        return iter(self.__elements)
+
+    def add(self, obj: Union[Bi, Duan]):
+        if obj.direction is not self.direction:
+            raise ChanException("方向不匹配", obj, self)
+        self.__elements.add(obj)
+
+    def remove(self, obj: Union[Bi, Duan]):
+        if obj.direction is not self.direction:
+            raise ChanException("方向不匹配", obj, self)
+        self.__elements.remove(obj)
 
     @property
     def start(self) -> FenXing:
-        if not self.elements:
+        if not self.__elements:
             raise ChanException("数据异常", self)
         func = min
         if self.direction is Direction.Down:
             func = max
-        return func([obj.start for obj in self.elements], key=lambda fx: fx.speck)
+        return func([obj.start for obj in self.__elements], key=lambda fx: fx.speck)
 
     @property
     def end(self) -> FenXing:
-        if not self.elements:
+        if not self.__elements:
             raise ChanException("数据异常", self)
         func = min
         if self.direction is Direction.Down:
             func = max
-        return func([obj.end for obj in self.elements], key=lambda fx: fx.speck)
+        return func([obj.end for obj in self.__elements], key=lambda fx: fx.speck)
 
     @property
     def high(self) -> float:
@@ -1793,25 +1570,9 @@ class FeatureSequence:
     def low(self) -> float:
         return min([self.end, self.start], key=lambda fx: fx.speck).speck
 
-    def put(self, obj: Union[Bi, Duan], is_right=True):
-        if self.direction is obj.direction:
-            relation = double_relation(self, obj)
-            if relation is Direction.Left:
-                self.elements.append(obj)
-            elif relation is Direction.Right and is_right:
-                self.elements.append(obj)
-
-    def check(self) -> bool:
-        flag = True
-        for obj in self.elements:
-            if obj.direction is not self.direction:
-                flag = False
-                print(obj, self.direction)
-        return flag
-
     @classmethod
     def new(cls, obj: Union[Bi, Duan]):
-        return cls([obj], obj.direction)
+        return cls({obj}, obj.direction)
 
     @staticmethod
     def analysis(bis, direction):
@@ -1823,12 +1584,12 @@ class FeatureSequence:
                 last = result[-1]
 
                 if double_relation(last, obj) in (Direction.Left,):
-                    last.elements.append(obj)
+                    last.add(obj)
                 else:
-                    result.append(FeatureSequence([obj], obj.direction))
+                    result.append(FeatureSequence({obj}, obj.direction))
                     # dp("FS.ANALYSIS", double_relation(last, obj))
             else:
-                result.append(FeatureSequence([obj], obj.direction))
+                result.append(FeatureSequence({obj}, obj.direction))
         return result
 
 
@@ -1907,6 +1668,11 @@ class CZSCAnalyzer:
             print(self.duans[i], self.duans[i - 1].end is self.duans[i].start)
             if self.duans[i - 1].end is not self.duans[i].start:
                 print(f"第{i}段段未结束")
+
+    def process_xd(self):
+        for bi in self._bis:
+            self.duans.push(bi)
+        dp(f"共{len(self.duans)}段")
 
     def process_zss(self):
         for duan in self.duans:
@@ -2012,13 +1778,13 @@ class CZSCAnalyzer:
             xd.extend(duan.charts())
             left, mid, right = duan.features
             if left:
-                if len(left.elements) > 1:
+                if len(left) > 1:
                     mergers.append(left)
             if mid:
-                if len(mid.elements) > 1:
+                if len(mid) > 1:
                     mergers.append(mid)
             if right:
-                if len(right.elements) > 1:
+                if len(right) > 1:
                     mergers.append(right)
             else:
                 print("right is None")
@@ -2113,6 +1879,7 @@ if __name__ == "__main__":
     print(f"中枢[笔]", len(bitstamp.bi_ZhongShus))
     # bitstamp.check_duans()
     # bitstamp.process_zss()
+    # bitstamp.process_xd()
 
     bitstamp.toCharts()
     # bitstamp.xd()
