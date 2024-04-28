@@ -21,7 +21,7 @@ try:
     from termcolor import colored
 except ImportError:
 
-    def colored(text, *args):
+    def colored(text, color="red", on_color=None, attrs=None):
         """彩色字"""
         return text
 
@@ -1060,19 +1060,22 @@ class Duan:
         return False
 
     @staticmethod
-    def pop(duans: List["Duan"], duan: "Duan"):
+    def pop(duans: List["Duan"], duan: "Duan", ZShandler: "ZhongShus"):
         ddp(colored("弹出段", "blue"), duan.state, duan)
         if duans[-1] is duan:
-            return duans.pop()
+            duans.pop()
+            ZShandler.pop(duan)
+            return duan
         raise
 
     @staticmethod
-    def append(duans: List["Duan"], duan: "Duan"):
+    def append(duans: List["Duan"], duan: "Duan", ZShandler: "ZhongShus"):
         ddp(colored("添加段", "green"), duan.state, duan)
         if duans:
             last = duans[-1]
             if last.end is duan.start:
                 duans.append(duan)
+                ZShandler.push(duan)
             else:
                 raise
             return
@@ -1106,7 +1109,7 @@ class Duans:
 
     def pop(self, bi, level=0):
         ddp()
-        handler: "ZhongShus" = self._handler
+        ZShandler: "ZhongShus" = self._handler
         duans: List[Duan] = self.__duans
         cmd = "Duans.POP"
 
@@ -1127,7 +1130,7 @@ class Duans:
 
         if last is not None:
             if (last.right and bi in last.right) or (last.right is None and bi in last.left):
-                Duan.pop(duans, duan)
+                Duan.pop(duans, duan, ZShandler)
                 last.pop_element(bi)
                 last.features = [last.left, last.mid, None]
                 return
@@ -1135,7 +1138,7 @@ class Duans:
         if lmr == (False, False, False):
             if len(duan.elements) >= 1:
                 raise ChanException("线段中有多个元素，但特征序列为空")
-            Duan.pop(duans, duan)
+            Duan.pop(duans, duan, ZShandler)
             if last is not None:
                 last.pop_element(bi)
 
@@ -1174,7 +1177,7 @@ class Duans:
 
     def push(self, bi: Bi, level=0):
         ddp()
-        handler: "ZhongShus" = self._handler
+        ZShandler: "ZhongShus" = self._handler
         duans: List[Duan] = self.__duans
         cmd = "Duans.PUSH"
         if not duans:
@@ -1197,7 +1200,10 @@ class Duans:
         duan.append_element(bi)
         if duan.direction is bi.direction:
             ddp("    " * level, "方向相同, 更新结束点")
-            duan.end = bi.end
+            if duan.mid:
+                duan.end = duan.mid.start
+            else:
+                duan.end = bi.end
             return
 
         feature = FeatureSequence.new(bi)
@@ -1219,7 +1225,7 @@ class Duans:
                     # Down
                     duan.end = bi.start
                     new = Duan.new(duan.index + 1, bi)
-                    Duan.append(duans, new)
+                    Duan.append(duans, new, ZShandler)
 
             elif relation in (Direction.Down, Direction.JumpDown):
                 if duan.direction is Direction.Down:
@@ -1228,7 +1234,7 @@ class Duans:
                     # Up
                     duan.end = bi.start
                     new = Duan.new(duan.index + 1, bi)
-                    Duan.append(duans, new)
+                    Duan.append(duans, new, ZShandler)
 
             else:
                 raise ChanException("未知的关系", relation)
@@ -1248,6 +1254,7 @@ class Duans:
                 else:
                     # Down, 底分型
                     duan.features = [left, mid, feature]
+                    duan.end = mid.start
                     duan.done = True
                     elements = duan.set_done(mid.start)
                     new = Duan.new(duan.index + 1, elements[0])
@@ -1259,7 +1266,7 @@ class Duans:
                         new.features = [features[-1], None, None]
                         if len(features) > 1:
                             new.features = [features[-2], features[-1], None]
-                    Duan.append(duans, new)
+                    Duan.append(duans, new, ZShandler)
 
             elif relation in (Direction.Down, Direction.JumpDown):
                 if duan.direction is Direction.Down:
@@ -1267,6 +1274,7 @@ class Duans:
                 else:
                     # Up, 顶分型
                     duan.features = [left, mid, feature]
+                    duan.end = mid.start
                     duan.done = True
                     elements = duan.set_done(mid.start)
                     new = Duan.new(duan.index + 1, elements[0])
@@ -1278,7 +1286,7 @@ class Duans:
                         new.features = [features[-1], None, None]
                         if len(features) > 1:
                             new.features = [features[-2], features[-1], None]
-                    Duan.append(duans, new)
+                    Duan.append(duans, new, ZShandler)
 
             else:
                 raise ChanException("未知的关系", relation)
