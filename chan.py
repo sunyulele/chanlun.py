@@ -77,6 +77,9 @@ class ChanException(Exception):
     ...
 
 
+States = Literal["老阳", "少阴", "老阴", "少阳"]
+
+
 def _print(*args, **kwords):
     result = []
     for i in args:
@@ -476,6 +479,8 @@ class NewBar:
 
 
 class FenXing:
+    __slots__ = "left", "mid", "right", "index", "__shape", "__speck"
+
     def __init__(self, left: NewBar, mid: NewBar, right: NewBar, index: int = 0):
         self.left = left
         self.mid = mid
@@ -585,9 +590,6 @@ class Bi:
     @property
     def length(self) -> int:
         return len(self.elements)
-
-
-States = Literal["老阳", "少阴", "老阴", "少阳"]
 
 
 class Duan:
@@ -855,15 +857,8 @@ class ZhongShu:
 
 
 @dataclass
-class PanZheng:
-    start: Union[Bi, Duan]
-    body: ZhongShu
-    end: Union[Bi, Duan]
-
-
-@dataclass
 class ZouShi:
-    body: List[Union[PanZheng, Duan, Bi]]
+    body: List[Union[Duan, Bi, ZhongShu]]
 
 
 class FeatureSequence:
@@ -908,6 +903,8 @@ class FeatureSequence:
         func = min
         if self.direction is Direction.Up:  # 线段方向向上特征序列取高高
             func = max
+        if self.direction is Direction.Down:
+            func = min
         fx = func([obj.start for obj in self.__elements], key=lambda fx: fx.speck)
         assert fx.shape in (Shape.G, Shape.D)
         return fx
@@ -919,6 +916,8 @@ class FeatureSequence:
         func = min
         if self.direction is Direction.Up:  # 线段方向向上特征序列取高高
             func = max
+        if self.direction is Direction.Down:
+            func = min
         fx = func([obj.end for obj in self.__elements], key=lambda fx: fx.speck)
         assert fx.shape in (Shape.G, Shape.D)
         return fx
@@ -1116,7 +1115,7 @@ class BaseAnalyzer:
             if last.speck < right.high:
                 tmp = fxs.pop()
                 assert tmp is last
-                tmp.real = False
+                # tmp.real = False
                 self.__pop_bi(tmp, level)
 
                 if fxs:
@@ -1128,7 +1127,7 @@ class BaseAnalyzer:
                     if last.speck > bottom.low:
                         tmp = fxs.pop()
                         assert tmp is last
-                        tmp.real = False
+                        # tmp.real = False
                         self.__pop_bi(tmp, level)
 
                         new = FenXing(cklines[bottom.index - 1], bottom, cklines[bottom.index + 1])
@@ -1149,7 +1148,7 @@ class BaseAnalyzer:
                 """
                 tmp = fxs.pop()
                 assert tmp is last
-                tmp.real = False
+                # tmp.real = False
                 self.__pop_bi(tmp, level)
 
                 if fxs:
@@ -1161,7 +1160,7 @@ class BaseAnalyzer:
                     if last.speck < top.high:
                         tmp = fxs.pop()
                         assert tmp is last
-                        tmp.real = False
+                        # tmp.real = False
                         self.__pop_bi(tmp, level)
                         new = FenXing(cklines[top.index - 1], top, cklines[top.index + 1])
                         assert new.shape is Shape.G, new
@@ -1172,7 +1171,7 @@ class BaseAnalyzer:
             if last.speck < fx.speck:
                 tmp = fxs.pop()
                 assert tmp is last
-                tmp.real = False
+                # tmp.real = False
                 self.__pop_bi(tmp, level)
 
                 if fxs:
@@ -1184,7 +1183,7 @@ class BaseAnalyzer:
                     if last.speck > bottom.low:
                         tmp = fxs.pop()
                         assert tmp is last
-                        tmp.real = False
+                        # tmp.real = False
                         self.__pop_bi(tmp, level)
                         new = FenXing(cklines[bottom.index - 1], bottom, cklines[bottom.index + 1])
                         assert new.shape is Shape.D, new
@@ -1204,7 +1203,7 @@ class BaseAnalyzer:
             if last.speck > fx.speck:
                 tmp = fxs.pop()
                 assert tmp is last
-                tmp.real = False
+                # tmp.real = False
                 self.__pop_bi(tmp, level)
 
                 if fxs:
@@ -1216,7 +1215,7 @@ class BaseAnalyzer:
                     if last.speck < top.high:
                         tmp = fxs.pop()
                         assert tmp is last
-                        tmp.real = False
+                        # tmp.real = False
                         self.__pop_bi(tmp, level)
                         new = FenXing(cklines[top.index - 1], top, cklines[top.index + 1])
                         assert new.shape is Shape.G, new
@@ -1336,7 +1335,7 @@ class BaseAnalyzer:
         elif lmr == (True, True, False):
             if duan.direction is bi.direction:
                 return
-            features = FeatureSequence.analysis(duan.elements, duan.elements[0].direction)
+            features = FeatureSequence.analysis(duan.elements, duan.direction)
             mid.remove(bi)
             if not mid:
                 duan.features = [left, None, None]
@@ -1463,7 +1462,7 @@ class BaseAnalyzer:
                     if double_relation(left, mid) is Direction.JumpDown:
                         duan.pre = new
                     ddp("    " * level, "底分型终结", duan.pre is not None, elements[0].direction)
-                    features = FeatureSequence.analysis(elements, Direction.Up)
+                    features = FeatureSequence.analysis(elements, new.direction)
                     if features:
                         new.features = [features[-1], None, None]
                         if len(features) > 1:
@@ -1492,7 +1491,7 @@ class BaseAnalyzer:
                     if double_relation(left, mid) is Direction.JumpUp:
                         duan.pre = new
                     ddp("    " * level, "顶分型终结", duan.pre is not None, elements[0].direction)
-                    features = FeatureSequence.analysis(elements, elements[0].direction)
+                    features = FeatureSequence.analysis(elements, new.direction)
                     if features:
                         new.features = [features[-1], None, None]
                         if len(features) > 1:
@@ -1536,8 +1535,8 @@ class BaseAnalyzer:
             return
         zs = zss[-1]
         if len(zs.elements) >= 3:
-            ralation = double_relation(zs, duan)
-            if ralation in (Direction.JumpUp, Direction.JumpDown):
+            relation = double_relation(zs, duan)
+            if relation in (Direction.JumpUp, Direction.JumpDown):
                 if duan.done:
                     zss.append(new)
                 else:
@@ -1562,8 +1561,8 @@ class BaseAnalyzer:
             return
         zs = zss[-1]
         if len(zs.elements) >= 3:
-            ralation = double_relation(zs, bi)
-            if ralation in (Direction.JumpUp, Direction.JumpDown):
+            relation = double_relation(zs, bi)
+            if relation in (Direction.JumpUp, Direction.JumpDown):
                 zss.append(new)
 
             else:
@@ -1789,8 +1788,11 @@ class Bitstamp(CZSCAnalyzer):
         return json
 
 
-if __name__ == "__main__":
+def main():
     bitstamp = Bitstamp("btcusd", freq=Freq.m5, size=3500)
     bitstamp.init(3000)
-
     bitstamp.toCharts()
+
+
+if __name__ == "__main__":
+    main()
