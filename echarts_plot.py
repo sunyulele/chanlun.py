@@ -226,6 +226,7 @@ def kline_pro(
     mergers: List["Feature"] = None,
     bzs: List["ZhongShu"] = None,
     dzs: List["ZhongShu"] = None,
+    info: List[dict] = None,
     title: str = "缠中说禅K线分析",
     width: str = "880px",
     height: str = "1080px",
@@ -514,8 +515,8 @@ def kline_pro(
         for tz in mergers:
             merger_dts = [tz.start.dt, tz.end.dt]
             merger_val = [
-                tz.start.low if str(tz.direction) == "Direction.Up" else tz.start.high,
-                tz.end.high if str(tz.direction) == "Direction.Up" else tz.end.low,
+                tz.start.speck,
+                tz.end.speck,
             ]
             chart_merger = Line()
             chart_merger.add_xaxis(merger_dts)
