@@ -1409,6 +1409,8 @@ class BaseAnalyzer:
                     duan.features = [left, feature, None]
                 else:
                     # Down
+                    duan.features = [left, feature, None]
+                    return
                     duan.end = bi.start
                     new = Duan.new(duan.index + 1, bi)
                     # Duan.append(duans, new, ZShandler)
@@ -1423,6 +1425,8 @@ class BaseAnalyzer:
                     duan.features = [left, feature, None]
                 else:
                     # Up
+                    duan.features = [left, feature, None]
+                    return
                     duan.end = bi.start
                     new = Duan.new(duan.index + 1, bi)
                     # Duan.append(duans, new, ZShandler)
