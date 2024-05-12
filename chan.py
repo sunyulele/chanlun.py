@@ -7,7 +7,7 @@
 
 import struct
 import traceback
-from typing import List, Union, Self, Literal, Optional, Tuple, final, Dict
+from typing import List, Union, Self, Literal, Optional, Tuple, final, Dict, Iterable
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -67,8 +67,10 @@ class Freq(Enum):
     m15: int = 60 * 15
     m30: int = 60 * 30
     H1: int = 60 * 60 * 1
-    H3: int = 60 * 60 * 3
+    H2: int = 60 * 60 * 2
     H4: int = 60 * 60 * 4
+    D1: int = 60 * 60 * 24  # 86400
+    D3: int = 60 * 60 * 24 * 3  # 259200
 
 
 class ChanException(Exception):
@@ -238,7 +240,7 @@ def triple_relation(left, mid, right, use_right=False) -> tuple[Optional[Shape],
 
 
 class RawBar:
-    __slots__ = "dt", "open", "high", "low", "close", "volume", "index", "cache", "done", "dts", "lv"
+    __slots__ = "dt", "open", "high", "low", "close", "volume", "index", "cache", "done", "dts", "lv", "start_include", "belong_include"
 
     def __init__(self, dt: datetime, open: float, high: float, low: float, close: float, volume: float, index: int = 0):
         self.dt = dt
@@ -253,7 +255,9 @@ class RawBar:
         self.dts = [
             self.dt,
         ]
-        self.lv = self.volume
+        self.lv = self.volume  # 最新成交量，用于Tick或频繁获取最新数据时对于相同时间戳的成交量计算“真实成交量可靠性”
+        self.start_include: bool = False  # 起始包含位
+        self.belong_include: int = -1  # 所属包含
 
     def __bytes__(self):
         return struct.pack(
@@ -430,6 +434,10 @@ class NewBar:
     def include(ck: "NewBar", k: RawBar, direction: Direction) -> tuple["NewBar", bool]:
         flag = False
         if double_relation(ck, k) in (Direction.Left, Direction.Right):
+            if len(ck.elements) == 1:
+                ck.elements[0].start_include = True  # 首次包含标志
+            k.belong_include = ck.elements[0].index  # 被谁包含 索引
+
             if direction in (Direction.Down, Direction.JumpDown):
                 # 向下取低低
                 high = min(ck.high, k.high)
@@ -593,7 +601,7 @@ class Bi:
 
 
 class Duan:
-    __slots__ = "index", "__start", "__end", "elements", "done", "pre", "features", "info", "direction"
+    __slots__ = "index", "__start", "__end", "elements", "done", "pre", "features", "info", "direction", "level"
 
     def __init__(self, index: int, start: FenXing, end: FenXing, elements: List[Bi]):
         self.index: int = index
@@ -612,6 +620,10 @@ class Duan:
 
         self.features: list[Optional[FeatureSequence]] = [None, None, None]
         self.info = []
+
+        self.level = 1
+        if type(self.elements[0]) is self:
+            self.level = 2
 
     def __str__(self):
         return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None}, {self.start}, {self.end})"
@@ -691,6 +703,14 @@ class Duan:
             {"xd": self.__start.speck, "dt": self.__start.dt},
             {"xd": self.__end.speck, "dt": self.__end.dt},
         ]
+
+    def get_elements(self) -> Iterable[Bi]:
+        elements = []
+        for obj in self.elements:
+            elements.append(obj)
+            if obj.end is self.end:
+                break
+        return elements
 
     def append_element(self, bi: Bi):
         if self.elements[-1].end is bi.start:
@@ -775,6 +795,14 @@ class ZhongShu:
         return max(self.elements[:3], key=lambda o: o.low).low
 
     @property
+    def g(self) -> float:
+        return min(self.elements, key=lambda o: o.high).high
+
+    @property
+    def d(self) -> float:
+        return max(self.elements, key=lambda o: o.low).low
+
+    @property
     def gg(self) -> float:
         return max(self.elements, key=lambda o: o.high).high
 
@@ -824,8 +852,31 @@ class ZhongShu:
         else:
             raise ChanException("中枢无法添加元素", self.last, obj)
 
-    def is_next(self, obj: Union[Bi, Duan]) -> bool:
-        return double_relation(self, obj) in (Direction.Right, Direction.Down)
+    @staticmethod
+    def analyzer(elements: List[Union[Bi, Duan]]) -> tuple[bool, list]:
+        if len(elements) < 3:
+            return False, []
+        direction = elements[0].direction
+        flag = False
+        zss: List[Union[Bi, Duan, ZhongShu]] = [elements[0]]
+        for obj in elements[1:]:
+            last: Union[Bi, Duan, ZhongShu] = zss[-1]
+            zs = [o for o in zss if type(o) is ZhongShu]
+            last_zs: ZhongShu = zs[-1] if zs else None
+            if last_zs and last_zs.elements[-1].end is obj.start:
+                if double_relation(last_zs, obj) in (Direction.JumpUp, Direction.JumpDown):
+                    if last_zs.right is not None:
+                        new_zs = ZhongShu(obj)
+                        zss.append(new_zs)
+                    else:
+                        o = last_zs.elements.pop(0)
+                        zss.insert(zss.index(last_zs), o)
+                else:
+                    last_zs.append_element(obj)
+            else:
+                new_zs = ZhongShu(obj)
+                zss.append(new_zs)
+        return True, zss
 
     def charts(self):
         return [
@@ -1021,6 +1072,50 @@ class BaseAnalyzer:
     def freq(self) -> int:
         return self.__freq
 
+    def push(self, bar: RawBar):
+        last = self._news[-1] if self._news else None
+        news = self._news
+        if last is None:
+            news.append(bar.new)
+        else:
+            relation = double_relation(last, bar)
+            if relation in (Direction.Left, Direction.Right):
+                direction = last.direction
+                try:
+                    direction = double_relation(news[-2], last)
+                except IndexError:
+                    traceback.print_exc()
+
+                new, flag = NewBar.include(last, bar, direction)
+                new.index = last.index
+                news[-1] = new
+            else:
+                new = bar.new
+                new.index = last.index + 1
+                news.append(new)
+
+        try:
+            left, mid, right = news[-3:]
+        except ValueError:
+            return
+
+        left, mid, right = news[-3:]  # ValueError: not enough values to unpack (expected 3, got 2)
+        shape, relations = triple_relation(left, mid, right)
+        mid.shape = shape
+        if relations[1] in (Direction.JumpDown, Direction.JumpUp):
+            right.jump = True
+        if relations[0] in (Direction.JumpDown, Direction.JumpUp):
+            mid.jump = True
+
+        if shape is Shape.G:
+            mid.speck = mid.high
+            fx = FenXing(left, mid, right)
+            self.__analysis_fx(fx, self._news, 0)
+        if shape is Shape.D:
+            mid.speck = mid.low
+            fx = FenXing(left, mid, right)
+            self.__analysis_fx(fx, self._news, 0)
+
     def __pop_bi(self, fx, level: int):
         cmd = "Bis.POP"
         bdp("    " * level, cmd, fx)
@@ -1030,6 +1125,7 @@ class BaseAnalyzer:
                 bi = self._bis.pop()
                 bdp("    " * level, cmd, bi)
                 fx.mid.bi = False
+                self.__pop_bi_zs(bi)
                 self.__pop_duan(bi, level)
 
             else:
@@ -1051,6 +1147,7 @@ class BaseAnalyzer:
         self._bis.append(bi)
         bi.start.mid.bi = True
         bi.end.mid.bi = True
+        self.__push_bi_zs(bi)
         self.__push_duan(bi, level)
 
     def __analysis_fx(self, fx: FenXing, cklines: List[NewBar], level: int):
@@ -1240,53 +1337,9 @@ class BaseAnalyzer:
         else:
             raise ChanException(last.shape, fx.shape)
 
-    def push(self, bar: RawBar):
-        last = self._news[-1] if self._news else None
-        news = self._news
-        if last is None:
-            news.append(bar.new)
-        else:
-            relation = double_relation(last, bar)
-            if relation in (Direction.Left, Direction.Right):
-                direction = last.direction
-                try:
-                    direction = double_relation(news[-2], last)
-                except IndexError:
-                    traceback.print_exc()
-
-                new, flag = NewBar.include(last, bar, direction)
-                new.index = last.index
-                news[-1] = new
-            else:
-                new = bar.new
-                new.index = last.index + 1
-                news.append(new)
-
-        try:
-            left, mid, right = news[-3:]
-        except ValueError:
-            return
-
-        left, mid, right = news[-3:]  # ValueError: not enough values to unpack (expected 3, got 2)
-        shape, relations = triple_relation(left, mid, right)
-        mid.shape = shape
-        if relations[1] in (Direction.JumpDown, Direction.JumpUp):
-            right.jump = True
-        if relations[0] in (Direction.JumpDown, Direction.JumpUp):
-            mid.jump = True
-
-        if shape is Shape.G:
-            mid.speck = mid.high
-            fx = FenXing(left, mid, right)
-            self.__analysis_fx(fx, self._news, 0)
-        if shape is Shape.D:
-            mid.speck = mid.low
-            fx = FenXing(left, mid, right)
-            self.__analysis_fx(fx, self._news, 0)
-
     def __pop_duan(self, bi, level=0):
         ddp()
-        self.__pop_bi_zs(bi)
+
         duans: List[Duan] = self._duans
         cmd = "Duans.POP"
 
@@ -1359,7 +1412,7 @@ class BaseAnalyzer:
 
     def __push_duan(self, bi: Bi, level=0):
         ddp()
-        self.__push_bi_zs(bi)
+
         duans: List[Duan] = self._duans
         cmd = "Duans.PUSH"
         if not duans:
@@ -1564,6 +1617,7 @@ class BaseAnalyzer:
             zss.append(new)
             return
         zs = zss[-1]
+
         if len(zs.elements) >= 3:
             relation = double_relation(zs, bi)
             if relation in (Direction.JumpUp, Direction.JumpDown):
@@ -1575,6 +1629,7 @@ class BaseAnalyzer:
             if double_relation(zs.elements[0], bi) in (Direction.JumpUp, Direction.JumpDown):
                 # 这里需要判断走势
                 zs.elements.pop(0)
+
             zs.append_element(bi)
         elif len(zs.elements) == 1:
             zs.append_element(bi)
@@ -1752,6 +1807,9 @@ class Bitstamp(CZSCAnalyzer):
         _next = left
         while 1:
             data = self.ohlc(self.symbol, self.freq, _next, _next := _next + self.freq * 1000)
+            if not data.get("data"):
+                print(data)
+                raise ChanException
             for bar in data["data"]["ohlc"]:
                 try:
                     self.step(
@@ -1770,7 +1828,7 @@ class Bitstamp(CZSCAnalyzer):
             end = int(data["data"]["ohlc"][-1]["timestamp"])
 
             _next = end
-            if len(data["data"]["ohlc"]) < 1000:
+            if len(data["data"]["ohlc"]) < 100:
                 break
 
     @staticmethod
@@ -1794,9 +1852,10 @@ class Bitstamp(CZSCAnalyzer):
 
 def main():
     bitstamp = Bitstamp("btcusd", freq=Freq.m5, size=3500)
-    bitstamp.init(3000)
+    bitstamp.init(8000)
     bitstamp.toCharts()
+    return bitstamp
 
 
 if __name__ == "__main__":
-    main()
+    bit = main()
