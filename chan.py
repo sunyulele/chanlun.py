@@ -1879,7 +1879,7 @@ class Bitstamp(CZSCAnalyzer):
     @staticmethod
     def ohlc(pair: str, step: int, start: int, end: int, length: int = 1000) -> Dict:
         proxies = {
-            "http": '"http://127.0.0.1:11809',
+            "http": "http://127.0.0.1:11809",
             "https": "http://127.0.0.1:11809",
         }
         s = requests.Session()
