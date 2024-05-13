@@ -887,6 +887,14 @@ class ZhongShu:
                 self.elements[-1].start.mid.dt,
                 self.elements[-1].start.mid.dt,
                 self.start.mid.dt,
+            ]
+            if len(self.elements) > 3
+            else [
+                self.start.mid.dt,
+                self.start.mid.dt,
+                self.end.mid.dt,
+                self.end.mid.dt,
+                self.start.mid.dt,
             ],
             [self.zg, self.zd, self.zd, self.zg, self.zg],
             "#993333" if self.direction is Direction.Up else "#99CC99",  # 上下上 为 红色，反之为 绿色
