@@ -7,6 +7,7 @@
 
 import struct
 import traceback
+from pathlib import Path
 from typing import List, Union, Self, Literal, Optional, Tuple, final, Dict, Iterable
 
 from dataclasses import dataclass
@@ -123,7 +124,7 @@ def bdp(*args, **kwargs):
 
 
 def ddp(*args, **kwargs):
-    if not 0:
+    if not 1:
         dp(*args, **kwargs)
 
 
@@ -1054,7 +1055,7 @@ class BaseAnalyzer:
     def __init__(self, symbol: str, freq: int):
         self.__symbol = symbol
         self.__freq = freq
-        self._bars: List[RawBar] = []
+        self._raws: List[RawBar] = []
         self._news: List[NewBar] = []
         self._fxs: List[FenXing] = []
         self._bis: List[Bi] = []
@@ -1582,11 +1583,12 @@ class BaseAnalyzer:
                             ddp("递归弹出")
                             self.__pop_duan_zs(duan)
             else:
-                raise ChanException("中枢中没有此元素", duan)
+                dp("中枢中没有此元素", duan)
 
     def __push_duan_zs(self, duan: Duan):
         zss = self._duan_zss
         new = ZhongShu(duan)
+        duans = self._duans
         if not zss:
             zss.append(new)
             return
@@ -1600,17 +1602,32 @@ class BaseAnalyzer:
                     zs.append_element(duan)
             else:
                 zs.append_element(duan)
+
         elif len(zs.elements) == 2:
             if double_relation(zs.elements[0], duan) in (Direction.JumpUp, Direction.JumpDown):
                 # 这里需要判断走势
-                zs.elements.pop(0)
-            zs.append_element(duan)
+                zss.pop()
+                zss.append(new)
+            else:
+                zs.append_element(duan)
+
         elif len(zs.elements) == 1:
-            zs.append_element(duan)
+            if zs.elements[0].index > 1:
+                relation = double_relation(duans[zs.elements[0].index - 2], zs.elements[0])
+                if (zs.elements[0].direction is Direction.Up and relation is Direction.Up) or (zs.elements[0].direction is Direction.Down and relation is Direction.Down):
+                    zss.pop()
+                    zss.append(new)
+                else:
+                    zs.append_element(duan)
+            else:
+                zs.append_element(duan)
+
         else:
-            zs.elements = [duan]
+            zss.pop()
+            zss.append(new)
 
     def __push_bi_zs(self, bi: Bi):
+        bis = self._bis
         zss = self._bi_zss
         new = ZhongShu(bi)
         if not zss:
@@ -1628,13 +1645,25 @@ class BaseAnalyzer:
         elif len(zs.elements) == 2:
             if double_relation(zs.elements[0], bi) in (Direction.JumpUp, Direction.JumpDown):
                 # 这里需要判断走势
-                zs.elements.pop(0)
+                zss.pop()
+                zss.append(new)
+            else:
+                zs.append_element(bi)
 
-            zs.append_element(bi)
         elif len(zs.elements) == 1:
-            zs.append_element(bi)
+            if zs.elements[0].index > 1:
+                relation = double_relation(bis[zs.elements[0].index - 2], zs.elements[0])
+                if (zs.elements[0].direction is Direction.Up and relation is Direction.Up) or (zs.elements[0].direction is Direction.Down and relation is Direction.Down):
+                    zss.pop()
+                    zss.append(new)
+                else:
+                    zs.append_element(bi)
+            else:
+                zs.append_element(bi)
+
         else:
-            zs.elements = [bi]
+            zss.pop()
+            zss.append(new)
 
     def __pop_bi_zs(self, obj: Bi):
         zss = self._bi_zss
@@ -1690,7 +1719,7 @@ class BaseAnalyzer:
         bzs = [zs.charts() for zs in self._bi_zss]
 
         charts = kline_pro(
-            [x.candleDict() for x in self._bars] if useReal else [x.candleDict() for x in self._news],
+            [x.candleDict() for x in self._raws] if useReal else [x.candleDict() for x in self._news],
             fx=fx,
             bi=bi,
             xd=xd,
@@ -1715,11 +1744,6 @@ class CZSCAnalyzer:
         self.raws = RawBars([], freq, self.freqs)
         self.__analyzer = BaseAnalyzer(symbol, freq)
         self.__analyzer._raws = self.raws
-
-    @classmethod
-    def load_bytes_file(cls, path: str):
-        with open(path, "rb") as f:
-            b = Bitstamp.load_bytes("btcusd", f.read())
 
     @final
     def step(
@@ -1770,9 +1794,9 @@ class CZSCAnalyzer:
             raise e
 
     @classmethod
-    def load_bytes(cls, symbol, bytes_data) -> "Self":
+    def load_bytes(cls, symbol: str, bytes_data: bytes, freq: int) -> "Self":
         size = struct.calcsize(">6d")
-        obj = cls(symbol, Freq.m5.value)
+        obj = cls(symbol, freq)
         while bytes_data:
             t = bytes_data[:size]
             k = RawBar.from_bytes(t)
@@ -1788,6 +1812,18 @@ class CZSCAnalyzer:
             data += bytes(k)
         return data
 
+    def save_file(self):
+        with open(f"{self.symbol}-{self.freq}-{int(self.__analyzer._raws[0].dt.timestamp())}-{int(self.__analyzer._raws[-1].dt.timestamp())}.dat", "wb") as f:
+            f.write(self.save_bytes())
+
+    @classmethod
+    def load_file(cls, path: str) -> "Self":
+        name = Path(path).name.split(".")[0]
+        symbol, freq, s, e = name.split("-")
+        with open(path, "rb") as f:
+            dat = f.read()
+            return cls.load_bytes(symbol, dat, int(freq))
+
     def toCharts(self, path: str = "czsc.html", useReal=False):
         self.__analyzer.toCharts(path=path, useReal=useReal)
 
@@ -1795,9 +1831,18 @@ class CZSCAnalyzer:
 class Bitstamp(CZSCAnalyzer):
     """ """
 
-    def __init__(self, symbol: str, freq: Freq, size: int = 0):
-        super().__init__(symbol, freq.value)
-        self.freq: int = freq.value
+    def __init__(self, symbol: str, freq: Union[Freq, int, str], size: int = 0):
+        if type(freq) is Freq:
+            super().__init__(symbol, freq.value)
+            self.freq: int = freq.value
+        elif type(freq) is int:
+            super().__init__(symbol, freq)
+            self.freq: int = freq
+        elif type(freq) is str:
+            super().__init__(symbol, int(freq))
+            self.freq: int = int(freq)
+        else:
+            raise
 
     def init(self, size):
         self.left_date_timestamp: int = int(datetime.now().timestamp() * 1000)
@@ -1851,7 +1896,7 @@ class Bitstamp(CZSCAnalyzer):
 
 
 def main():
-    bitstamp = Bitstamp("btcusd", freq=Freq.m5, size=3500)
+    bitstamp = Bitstamp("btcusd", freq=Freq.H4, size=3500)
     bitstamp.init(8000)
     bitstamp.toCharts()
     return bitstamp
@@ -1859,3 +1904,6 @@ def main():
 
 if __name__ == "__main__":
     bit = main()
+    bit.save_file()
+    # bit = Bitstamp.load_file("btcusd-14400-1600416000-1715601600.dat")
+    # bit.toCharts()
