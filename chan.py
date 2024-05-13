@@ -884,8 +884,8 @@ class ZhongShu:
             [
                 self.start.mid.dt,
                 self.start.mid.dt,
-                self.end.mid.dt,
-                self.end.mid.dt,
+                self.elements[-1].start.mid.dt,
+                self.elements[-1].start.mid.dt,
                 self.start.mid.dt,
             ],
             [self.zg, self.zd, self.zd, self.zg, self.zg],
@@ -1715,8 +1715,8 @@ class BaseAnalyzer:
             else:
                 print("right is None")
 
-        dzs = [zs.charts() for zs in self._duan_zss]
-        bzs = [zs.charts() for zs in self._bi_zss]
+        dzs = [zs.charts() for zs in self._duan_zss if len(zs.elements) >= 3]
+        bzs = [zs.charts() for zs in self._bi_zss if len(zs.elements) >= 3]
 
         charts = kline_pro(
             [x.candleDict() for x in self._raws] if useReal else [x.candleDict() for x in self._news],
