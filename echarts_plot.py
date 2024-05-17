@@ -526,7 +526,7 @@ def kline_pro(
                 symbol="triangle",
                 symbol_size=10,
                 itemstyle_opts=opts.ItemStyleOpts(
-                    color="rgba(0, 150, 155, 1.0)",
+                    color="rgba(255, 100, 255, 1.0)",
                 ),
                 linestyle_opts=opts.LineStyleOpts(width=3.5),
             )
