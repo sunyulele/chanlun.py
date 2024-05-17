@@ -5,6 +5,7 @@
 # @File    : chan.py
 """
 
+import math
 import struct
 import traceback
 from pathlib import Path
@@ -381,6 +382,87 @@ class RawBars:
 
             else:
                 bars.append(new)
+
+            self.calcMACD(bars)
+            self.calc1355(bars)
+            self.calcBOLL(bars)
+            self.calcKDJ(bars)
+
+    def calcBOLL(self, klines: List[RawBar], timeperiod: int = 20, std: int = 2):
+        # https://blog.csdn.net/qq_41437512/article/details/105473845
+        # https://wiki.mbalib.com/wiki/%E5%B8%83%E6%9E%97%E7%BA%BF%E6%8C%87%E6%A0%87
+
+        self.calcMA(klines, timeperiod)
+        size = len(klines)
+        if size < timeperiod:
+            return
+        last = klines[-1]
+        second = klines[-2]
+
+        md = math.sqrt(((last.close - last.cache[f"ma_{timeperiod}"]) ** 2) / timeperiod)
+        mb = second.cache[f"ma_{timeperiod}"]
+        up = mb + std * md
+        dn = mb - std * md
+        last.cache[f"boll_{timeperiod}"] = {"up": up, "mid": mb, "dn": dn}
+
+    def calcKDJ(self, klines: List[RawBar], timeperiod: int = 9, a=2 / 3, b=1 / 3):
+        # https://wiki.mbalib.com/wiki/%E9%9A%8F%E6%9C%BA%E6%8C%87%E6%A0%87
+        size = len(klines)
+        if size < timeperiod:
+            return
+        last: RawBar = klines[-1]
+        second: RawBar = klines[-2]
+
+        l = min(klines[-timeperiod:], key=lambda x: x.low).low
+        h = max(klines[-timeperiod:], key=lambda x: x.high).high
+        n = h - l
+        if n == 0:
+            # print(self.klines[-timeperiod:])
+            n = 1
+            print(colored("float division by zero", "red"))
+        rsv = ((last.close - l) / n) * 100
+        sk = second.cache[f"K_{timeperiod}"] if second.cache.get(f"K_{timeperiod}") else 50
+        sd = second.cache[f"D_{timeperiod}"] if second.cache.get(f"D_{timeperiod}") else 50
+        lk = last.cache[f"K_{timeperiod}"] if last.cache.get(f"K_{timeperiod}") else 50
+        ld = last.cache[f"D_{timeperiod}"] if last.cache.get(f"D_{timeperiod}") else 50
+        last.cache[f"K_{timeperiod}"] = a * sk + b * rsv
+        last.cache[f"D_{timeperiod}"] = a * sd + b * lk
+        last.cache[f"J_{timeperiod}"] = 3 * ld - 2 * lk
+
+    def calcEMA(self, klines, timeperiod=5):
+        if len(klines) == 1:
+            ema = klines[-1].close
+        else:
+            ema = (2 * klines[-1].close + klines[-2].cache[f"ema_{timeperiod}"] * (timeperiod - 1)) / (timeperiod + 1)
+        klines[-1].cache[f"ema_{timeperiod}"] = ema
+
+    def calcMA(self, klines, timeperiod=5):
+        if len(klines) < timeperiod:
+            ma = klines[-1].close
+        else:
+            ma = sum([k.close for k in klines[-timeperiod:]]) / timeperiod
+        klines[-1].cache[f"ma_{timeperiod}"] = ma
+
+    def calcMACD(self, klines, fastperiod=12, slowperiod=26, signalperiod=9):
+        self.calcEMA(klines, fastperiod)
+        self.calcEMA(klines, slowperiod)
+        DIF = klines[-1].cache[f"ema_{fastperiod}"] - klines[-1].cache[f"ema_{slowperiod}"]
+        klines[-1].cache[f"dif_{fastperiod}_{slowperiod}_{signalperiod}"] = DIF
+
+        if len(klines) == 1:
+            dea = klines[-1].cache[f"dif_{fastperiod}_{slowperiod}_{signalperiod}"]
+        else:
+            dea = (2 * klines[-1].cache[f"dif_{fastperiod}_{slowperiod}_{signalperiod}"] + klines[-2].cache[f"dea_{fastperiod}_{slowperiod}_{signalperiod}"] * (signalperiod - 1)) / (signalperiod + 1)
+
+        klines[-1].cache[f"dea_{fastperiod}_{slowperiod}_{signalperiod}"] = dea
+        klines[-1].cache[f"macd_{fastperiod}_{slowperiod}_{signalperiod}"] = (DIF - dea) * 2
+
+    def calc1355(self, klines: List[RawBar]):
+        self.calcEMA(klines, 13)
+        self.calcEMA(klines, 55)
+        self.calcEMA(klines, 220)
+        self.calcEMA(klines, 576)
+        self.calcEMA(klines, 676)
 
 
 class NewBar:
@@ -1450,6 +1532,7 @@ class BaseAnalyzer:
                 duan.end = duan.mid.start
             else:
                 duan.end = bi.end
+            dp("    " * level, "方向相同, 更新结束点", duan.end)
             return
 
         feature = FeatureSequence({bi}, Direction.Up if bi.direction is Direction.Down else Direction.Down)
@@ -1525,6 +1608,7 @@ class BaseAnalyzer:
                         self.__push_duan_zs(duan)
                     new = Duan.new(duan.index + 1, elements[0])
                     new.elements = elements
+                    new.end = elements[-1].end
                     if double_relation(left, mid) is Direction.JumpDown:
                         duan.pre = new
                     ddp("    " * level, "底分型终结", duan.pre is not None, elements[0].direction)
@@ -1554,6 +1638,7 @@ class BaseAnalyzer:
                         self.__push_duan_zs(duan)
                     new = Duan.new(duan.index + 1, elements[0])
                     new.elements = elements
+                    new.end = elements[-1].end
                     if double_relation(left, mid) is Direction.JumpUp:
                         duan.pre = new
                     ddp("    " * level, "顶分型终结", duan.pre is not None, elements[0].direction)
@@ -1904,7 +1989,7 @@ class Bitstamp(CZSCAnalyzer):
 
 
 def main():
-    bitstamp = Bitstamp("btcusd", freq=Freq.H4, size=3500)
+    bitstamp = Bitstamp("btcusd", freq=Freq.m5, size=3500)
     bitstamp.init(8000)
     bitstamp.toCharts()
     return bitstamp
