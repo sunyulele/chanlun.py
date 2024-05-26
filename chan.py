@@ -632,6 +632,75 @@ class NewBar(BaseItem):
             # self.cklines.append(new)
         return new, flag
 
+    @staticmethod
+    def analyzer(bar: RawBar, news: List["NewBar"], fast_period: int = 12, slow_period: int = 26, signal_period: int = 9):
+        last = news[-1] if news else None
+        if last is None:
+            news.append(bar.new)
+        else:
+            relation = double_relation(last, bar)
+            if relation in (Direction.Left, Direction.Right):
+                direction = last.direction
+                try:
+                    direction = double_relation(news[-2], last)
+                except IndexError:
+                    traceback.print_exc()
+
+                new, flag = NewBar.include(last, bar, direction)
+                new.index = last.index
+                news[-1] = new
+            else:
+                new = bar.new
+                new.index = last.index + 1
+                news.append(new)
+
+        klines = news
+        if len(klines) == 1:
+            ema_slow = klines[-1].close
+            ema_fast = klines[-1].close
+        else:
+            ema_slow = (2 * klines[-1].close + klines[-2].cache[f"ema_{slow_period}"] * (slow_period - 1)) / (slow_period + 1)
+            ema_fast = (2 * klines[-1].close + klines[-2].cache[f"ema_{fast_period}"] * (fast_period - 1)) / (fast_period + 1)
+        klines[-1].cache[f"ema_{slow_period}"] = ema_slow
+        klines[-1].cache[f"ema_{fast_period}"] = ema_fast
+        DIF = ema_fast - ema_slow
+        klines[-1].cache[f"dif_{fast_period}_{slow_period}_{signal_period}"] = DIF
+
+        if len(klines) == 1:
+            dea = DIF
+        else:
+            dea = (2 * DIF + klines[-2].cache[f"dea_{fast_period}_{slow_period}_{signal_period}"] * (signal_period - 1)) / (signal_period + 1)
+
+        klines[-1].cache[f"dea_{fast_period}_{slow_period}_{signal_period}"] = dea
+        macd = (DIF - dea) * 2
+        klines[-1].cache[f"macd_{fast_period}_{slow_period}_{signal_period}"] = macd
+
+        try:
+            left, mid, right = news[-3:]
+        except ValueError:
+            return
+
+        left, mid, right = news[-3:]  # ValueError: not enough values to unpack (expected 3, got 2)
+        shape, relations = triple_relation(left, mid, right)
+        mid.shape = shape
+
+        if relations[1] in (Direction.JumpDown, Direction.JumpUp):
+            right.jump = True
+        if relations[0] in (Direction.JumpDown, Direction.JumpUp):
+            mid.jump = True
+
+        if shape is Shape.G:
+            mid.speck = mid.high
+
+        if shape is Shape.D:
+            mid.speck = mid.low
+
+        if shape is Shape.S:
+            right.speck = right.high
+
+        if shape is Shape.X:
+            right.speck = right.low
+
 
 class FenXing:
     __slots__ = "left", "mid", "right", "index", "__shape", "__speck", "real"
@@ -738,7 +807,7 @@ class Bi(BaseItem):
 
     @property
     def relation(self) -> bool:
-        #print(double_relation(self.start, self.end), self.direction)
+        # print(double_relation(self.start, self.end), self.direction)
         if self.direction is Direction.Down:
             return double_relation(self.start, self.end) in (
                 Direction.Down,
@@ -2352,13 +2421,16 @@ class BaseAnalyzer:
                     self.__pop_bi_zs(obj)
 
     def process(self):
-        # self._news.clear()
+        self._news.clear()
         self._fxs.clear()
         self._bis.clear()
         self._duans.clear()
         self._bi_zss.clear()
         self._duan_zss.clear()
         self._zss.clear()
+
+        for bar in self._raws:
+            NewBar.analyzer(bar, self._news)
 
         for i in range(1, len(self._news) - 1):
             fx = FenXing(self._news[i - 1], self._news[i], self._news[i + 1])
