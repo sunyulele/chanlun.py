@@ -120,7 +120,7 @@ def dp(*args, **kwords):
 
 
 def bdp(*args, **kwargs):
-    if not 1:
+    if not 0:
         dp(*args, **kwargs)
 
 
@@ -240,6 +240,7 @@ def triple_relation(left, mid, right, use_right=False) -> tuple[Optional[Shape],
             shape = Shape.T  # 喇叭口型
     return shape, (lm, mr)
 
+
 def double_scope(left, right) -> tuple[bool, Optional["Pillar"]]:
     """
     计算重叠范围
@@ -267,31 +268,56 @@ def triple_scope(left, mid, right) -> tuple[bool, Optional["Pillar"]]:
         return double_scope(p, right)
     return False, None
 
+
+class MACDConfig:
+    def __init__(self, fast: int, slow: int, signal: int) -> None:
+        self.fast = fast
+        self.slow = slow
+        self.signal = signal
+
+
 class Pillar:
     def __init__(self, high: float, low: float):
         self.low = low
         self.high = high
 
 
-class RawBar:
-    __slots__ = "dt", "open", "high", "low", "close", "volume", "index", "cache", "done", "dts", "lv", "start_include", "belong_include"
+class BaseItem:
+    __slots__ = "cache", "elements", "done", "index"
+    fast = 12
+    slow = 26
+    signal = 26
+
+    def __init__(self, index=0):
+        self.cache = dict()
+        self.elements = []
+        self.done = False
+        self.index = index
+
+    @property
+    def macd(self) -> float:
+        return sum(abs(bar.macd) for bar in self.elements)
+
+
+class RawBar(BaseItem):
+    __slots__ = "dt", "open", "high", "low", "close", "volume", "index", "cache", "done", "dts", "lv", "start_include", "belong_include", "shape"
 
     def __init__(self, dt: datetime, open: float, high: float, low: float, close: float, volume: float, index: int = 0):
+        super().__init__(index)
+        self.elements = None
         self.dt = dt
         self.open = open
         self.high = high
         self.low = low
         self.close = close
         self.volume = volume
-        self.index = index
-        self.cache = dict()
-        self.done = False
         self.dts = [
             self.dt,
         ]
         self.lv = self.volume  # 最新成交量，用于Tick或频繁获取最新数据时对于相同时间戳的成交量计算“真实成交量可靠性”
         self.start_include: bool = False  # 起始包含位
         self.belong_include: int = -1  # 所属包含
+        self.shape: Optional[Shape] = None
 
     def __bytes__(self):
         return struct.pack(
@@ -308,6 +334,9 @@ class RawBar:
     def from_bytes(cls, buf: bytes):
         timestamp, open, high, low, close, vol = struct.unpack(">6d", buf)
         return cls(dt=datetime.fromtimestamp(timestamp), open=open, high=high, low=low, close=close, volume=vol)
+
+    def macd(self) -> float:
+        return self.cache[f"macd_{BaseItem.fast}_{BaseItem.slow}_{BaseItem.signal}"]
 
     @property
     def ampl(self) -> float:
@@ -351,22 +380,22 @@ class RawBar:
 
 
 class RawBars:
-    __slots__ = "__bars", "__size", "freq", "klines"
+    __slots__ = "__bars", "__size", "freq", "klines", "macd_config"
 
-    def __init__(self, bars: Optional[List[RawBar]] = None, freq: Optional[int] = None, merger: Optional[List] = None):
+    def __init__(self, bars: Optional[List[RawBar]] = None, freq: Optional[int] = None, merger: Optional[List] = None, config: Optional[MACDConfig] = None) -> None:
         if bars is None:
             bars = []
         self.__bars: List[RawBar] = bars  # 原始K线
         self.__size = len(bars)
         self.freq = freq
         self.klines = {freq: self.__bars}
+        self.macd_config = config
 
         if merger:
             merger = set(merger)
             merger.remove(freq)
             for m in merger:
                 self.klines[m] = []
-        self.klines = {freq: self.__bars}
 
     def __getitem__(self, index: Union[slice, int]) -> Union[List[RawBar], RawBar]:
         return self.__bars[index]
@@ -414,8 +443,10 @@ class RawBars:
 
             else:
                 bars.append(new)
-
-            self.calcMACD(bars)
+            if self.macd_config is not None:
+                self.calcMACD(bars, self.macd_config.fast, self.macd_config.slow, self.macd_config.signal)
+            else:
+                self.calcMACD(bars)
             self.calc1355(bars)
             self.calcBOLL(bars)
             self.calcKDJ(bars)
@@ -497,10 +528,11 @@ class RawBars:
         self.calcEMA(klines, 676)
 
 
-class NewBar:
+class NewBar(BaseItem):
     __slots__ = "dt", "open", "high", "low", "close", "volume", "index", "shape", "elements", "relation", "speck", "done", "jump", "cache", "bi", "duan", "_dt"
 
     def __init__(self, dt: datetime, open: float, high: float, low: float, close: float, volume: float, index: int = 0, elements=None):
+        super().__init__(index)
         self.dt: datetime = dt
         self.open: float = open
         self.high: float = high
@@ -602,13 +634,15 @@ class NewBar:
 
 
 class FenXing:
-    __slots__ = "left", "mid", "right", "index", "__shape", "__speck"
+    __slots__ = "left", "mid", "right", "index", "__shape", "__speck", "real"
 
     def __init__(self, left: NewBar, mid: NewBar, right: NewBar, index: int = 0):
         self.left = left
         self.mid = mid
         self.right = right
         self.index = index
+
+        self.real = False
 
         self.__shape = mid.shape
         self.__speck = mid.speck
@@ -656,10 +690,11 @@ class FenXing:
         return fxs.pop()
 
 
-class Bi:
+class Bi(BaseItem):
     __slots__ = "index", "start", "end", "elements", "done", "real_high", "real_low", "direction", "ld"
 
     def __init__(self, index: int, start: FenXing, end: FenXing, elements: List[NewBar], done: bool = False):
+        super().__init__(index)
         self.index: int = index
         self.start: FenXing = start
         self.end: FenXing = end
@@ -703,6 +738,7 @@ class Bi:
 
     @property
     def relation(self) -> bool:
+        print(double_relation(self.start, self.end), self.direction)
         if self.direction is Direction.Down:
             return double_relation(self.start, self.end) in (
                 Direction.Down,
@@ -969,18 +1005,23 @@ class Bi:
         return None, None
 
 
+class Duan(BaseItem):
+    """
+    线段
+    """
 
-class Duan:
-    __slots__ = "index", "__start", "__end", "elements", "done", "pre", "features", "info", "direction", "level"
+    __slots__ = "index", "__start", "__end", "elements", "done", "pre", "next", "features", "info", "direction", "level"
 
     def __init__(self, index: int, start: FenXing, end: FenXing, elements: List[Bi]):
+        super().__init__(index)
         self.index: int = index
         self.__start: FenXing = start
         self.__end: FenXing = end
         self.elements: List[Bi] = elements
 
         self.done: bool = False
-        self.pre: Optional[Self] = None
+        self.pre: Optional[Self] = None  # 前一段
+        self.next: Optional[Self] = None  # 后一段
         if self.__start.shape is Shape.G and self.__end.shape is Shape.D:
             self.direction = Direction.Down
         elif self.__start.shape is Shape.D and self.__end.shape is Shape.G:
@@ -1084,6 +1125,14 @@ class Duan:
 
     def append_element(self, bi: Bi):
         if self.elements[-1].end is bi.start:
+            if bi.direction is not self.direction:
+                if len(self.elements) >= 3:
+                    if self.direction is Direction.Down:
+                        if self.elements[-3].low < bi.high:
+                            dp("向下线段被笔破坏", bi)
+                    if self.direction is Direction.Up:
+                        if self.elements[-3].high > bi.low:
+                            dp("向上线段被笔破坏", bi)
             self.elements.append(bi)
         else:
             dp("线段添加元素时，元素不连续", self.elements[-1], bi)
@@ -1253,16 +1302,18 @@ class Duan:
         # duans[-1].check()
 
 
-class ZhongShu:
+class ZhongShu(BaseItem):
     # __slots__ = "elements", "index", "level"
 
-    def __init__(self, obj: Union[Bi, Duan]):
+    def __init__(self, obj: Union[Bi, Duan, RawBar, NewBar]):
+        super().__init__(0)
         self.elements = [obj]
         self.index = 0
         self.level = 0
         self._doing = None
         if not obj.done:
             self._doing = obj
+        self.level = 1
         if type(obj) is Bi:
             self.level = 1
         if type(obj) is Duan:
@@ -1275,19 +1326,19 @@ class ZhongShu:
         return f"中枢({self.elements})"
 
     @property
-    def left(self) -> Union[Bi, Duan]:
+    def left(self) -> Union[Bi, Duan, RawBar, NewBar]:
         return self.elements[0] if self.elements else None
 
     @property
-    def mid(self) -> Union[Bi, Duan]:
+    def mid(self) -> Union[Bi, Duan, RawBar, NewBar]:
         return self.elements[1] if len(self.elements) > 1 else None
 
     @property
-    def right(self) -> Union[Bi, Duan]:
+    def right(self) -> Union[Bi, Duan, RawBar, NewBar]:
         return self.elements[2] if len(self.elements) > 2 else None
 
     @property
-    def last(self) -> Union[Bi, Duan]:
+    def last(self) -> Union[Bi, Duan, RawBar, NewBar]:
         return self.elements[-1] if self.elements else None
 
     @property
@@ -1521,7 +1572,7 @@ class KlineGenerator:
         self.dt = datetime(2021, 9, 3, 19, 50, 40, 916152)
         self.arr = arr
 
-    def up(self, start, end, size=5):
+    def up(self, start, end, size=8):
         n = 0
         m = round(abs(start - end) * (1 / size), 8)
         o = start
@@ -1534,7 +1585,7 @@ class KlineGenerator:
             n += 1
             self.dt = datetime.fromtimestamp(self.dt.timestamp() + 60 * 60)
 
-    def down(self, start, end, size=5):
+    def down(self, start, end, size=8):
         n = 0
         m = round(abs(start - end) * (1 / size), 8)
         o = start
@@ -1570,15 +1621,16 @@ class BaseAnalyzer:
     def __init__(self, symbol: str, freq: int):
         self.__symbol = symbol
         self.__freq = freq
-        self._raws: List[RawBar] = []
-        self._news: List[NewBar] = []
-        self._fxs: List[FenXing] = []
-        self._bis: List[Bi] = []
-        self._bi_zss: List[ZhongShu] = []
-        self._duans: List[Duan] = []
-        self._duan_zss: List[ZhongShu] = []
+        self._raws: List[RawBar] = []  # 原始K线列表
+        self._news: List[NewBar] = []  # 去除包含关系K线列表
+        self._fxs: List[FenXing] = []  # 分型列表
+        self._bis: List[Bi] = []  # 笔
+        self._bi_zss: List[ZhongShu] = []  # 由笔构成的中枢列表
+        self._duans: List[Duan] = []  # 由笔构成得而线段列表
+        self._duan_zss: List[ZhongShu] = []  # 由线段构成的中枢列表
 
         self._zss: List[ZouShi] = []  # 走势
+        self._macd_config = MACDConfig(12, 26, 9)
 
     @property
     def symbol(self) -> str:
@@ -1587,6 +1639,8 @@ class BaseAnalyzer:
     @property
     def freq(self) -> int:
         return self.__freq
+
+    def xd_zs_bc(self): ...
 
     def push(self, bar: RawBar, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9):
         last = self._news[-1] if self._news else None
@@ -1609,7 +1663,7 @@ class BaseAnalyzer:
                 new = bar.new
                 new.index = last.index + 1
                 news.append(new)
-                
+
         klines = news
         if len(klines) == 1:
             ema_slow = klines[-1].close
@@ -1630,7 +1684,7 @@ class BaseAnalyzer:
         klines[-1].cache[f"dea_{fast_period}_{slow_period}_{signal_period}"] = dea
         macd = (DIF - dea) * 2
         klines[-1].cache[f"macd_{fast_period}_{slow_period}_{signal_period}"] = macd
-        
+
         try:
             left, mid, right = news[-3:]
         except ValueError:
@@ -1689,7 +1743,7 @@ class BaseAnalyzer:
 
     def __analysis_fx(self, fx: FenXing, cklines: List[NewBar], level: int):
         cmd = "Bis.ANALYSIS"
-        bdp("    " * level, cmd, fx)
+        bdp("    " * level, cmd, "input", fx)
         fxs: List[FenXing] = self._fxs
 
         last: Union[FenXing, None] = fxs[-1] if fxs else None
@@ -1704,11 +1758,11 @@ class BaseAnalyzer:
             raise ChanException("时序错误")
 
         if last.shape is Shape.G and fx.shape is Shape.D:
-            bdp("    " * level, cmd, "GD")
             bi = Bi(0, last, fx, cklines[last.mid.index : fx.mid.index + 1])
+            bdp("    " * level, cmd, "GD", bi.length)
             if bi.length > 4:
                 if bi.real_high is not last.mid:
-                    dp("    " * level, cmd, "不是真顶")
+                    dp("    " * level, cmd, "不是真顶", last.mid, bi.real_high)
                     top = bi.real_high
                     new = FenXing(cklines[top.index - 1], top, cklines[top.index + 1])
                     assert new.shape is Shape.G, new
@@ -1721,6 +1775,7 @@ class BaseAnalyzer:
                     self.__push_bi(bi, level)
                 else:
                     ...
+                    bdp("    " * level, cmd, "GD", "521修正", flag, fx.mid is bi.real_low)
                     # 2024 05 21 修正
                     _cklines = cklines[last.mid.index :]
                     _fx, _bi = Bi.analysis_one(_cklines)
@@ -1736,6 +1791,7 @@ class BaseAnalyzer:
                         self.__pop_bi(tmp, level)
                         self.__analysis_fx(_bi.start, cklines, level + 1)  # 处理新底
                         self.__analysis_fx(_bi.end, cklines, level + 1)  # 再处理当前顶
+
             else:
                 ...
 
@@ -1744,7 +1800,7 @@ class BaseAnalyzer:
             bi = Bi(0, last, fx, cklines[last.mid.index : fx.mid.index + 1])
             if bi.length > 4:
                 if bi.real_low is not last.mid:
-                    dp("    " * level, cmd, "不是真底")
+                    dp("    " * level, cmd, "不是真底", last.mid, bi.real_low)
                     bottom = bi.real_low
                     new = FenXing(cklines[bottom.index - 1], bottom, cklines[bottom.index + 1])
                     assert new.shape is Shape.D, new
@@ -1757,6 +1813,7 @@ class BaseAnalyzer:
                     self.__push_bi(bi, level)
                 else:
                     ...
+                    bdp("    " * level, cmd, "DG", "521修正", flag, fx.mid is bi.real_low)
                     # 2024 05 21 修正
                     _cklines = cklines[last.mid.index :]
                     _fx, _bi = Bi.analysis_one(_cklines)
@@ -1796,7 +1853,7 @@ class BaseAnalyzer:
 
                         new = FenXing(cklines[bottom.index - 1], bottom, cklines[bottom.index + 1])
                         assert new.shape is Shape.D, new
-                        dp("    " * level, cmd, "GS修正")
+                        dp("    " * level, cmd, "GS修正", last, new)
                         self.__analysis_fx(new, cklines, level + 1)  # 处理新底
 
         elif last.shape is Shape.D and fx.shape is Shape.X:
@@ -1828,7 +1885,7 @@ class BaseAnalyzer:
                         self.__pop_bi(tmp, level)
                         new = FenXing(cklines[top.index - 1], top, cklines[top.index + 1])
                         assert new.shape is Shape.G, new
-                        dp("    " * level, cmd, "DX修正")
+                        dp("    " * level, cmd, "DX修正", last, new)
                         self.__analysis_fx(new, cklines, level + 1)  # 处理新顶
 
         elif last.shape is Shape.G and fx.shape is Shape.G:
@@ -1851,7 +1908,7 @@ class BaseAnalyzer:
                         self.__pop_bi(tmp, level)
                         new = FenXing(cklines[bottom.index - 1], bottom, cklines[bottom.index + 1])
                         assert new.shape is Shape.D, new
-                        dp("    " * level, cmd, "GG修正")
+                        dp("    " * level, cmd, "GG修正", last, new)
                         self.__analysis_fx(new, cklines, level + 1)  # 处理新底
                         self.__analysis_fx(fx, cklines, level + 1)  # 再处理当前顶
                         return
@@ -1883,7 +1940,7 @@ class BaseAnalyzer:
                         self.__pop_bi(tmp, level)
                         new = FenXing(cklines[top.index - 1], top, cklines[top.index + 1])
                         assert new.shape is Shape.G, new
-                        dp("    " * level, cmd, "DD修正")
+                        dp("    " * level, cmd, "DD修正", last, new)
                         self.__analysis_fx(new, cklines, level + 1)  # 处理新顶
                         self.__analysis_fx(fx, cklines, level + 1)  # 再处理当前底
                         return
@@ -2003,12 +2060,11 @@ class BaseAnalyzer:
 
         duan.append_element(bi)
         if duan.direction is bi.direction:
-            ddp("    " * level, "方向相同, 更新结束点")
             if duan.mid:
                 duan.end = duan.mid.start
             else:
                 duan.end = bi.end
-            dp("    " * level, "方向相同, 更新结束点", duan.end)
+            ddp("    " * level, "方向相同, 更新结束点", duan.end)
             return
 
         feature = FeatureSequence({bi}, Direction.Up if bi.direction is Direction.Down else Direction.Down)
@@ -2142,7 +2198,7 @@ class BaseAnalyzer:
         else:
             raise ChanException("未知的状态", state, lmr)
 
-        duans[-1].check()
+        # duans[-1].check()
 
     def __pop_duan_zs(self, duan: Duan):
         zss = self._duan_zss
@@ -2312,13 +2368,30 @@ class BaseAnalyzer:
 
 class CZSCAnalyzer:
     def __init__(self, symbol: str, freq: int, freqs: List[int] = None):
+        if freqs is None:
+            freqs = [freq]
+        else:
+            freqs.append(freq)
+            freqs = list(set(freqs))
         self.symbol = symbol
         self.freq = freq
-        self.freqs = freqs or [freq]
+        self.freqs = freqs
 
         self.raws = RawBars([], freq, self.freqs)
-        self.__analyzer = BaseAnalyzer(symbol, freq)
-        self.__analyzer._raws = self.raws
+
+        self._analyzeies = dict()
+        for freq in self.freqs:
+            a = BaseAnalyzer(symbol, freq)
+            a._raws = self.raws.klines[freq]
+            self._analyzeies[freq] = a
+        self.__analyzer = self._analyzeies[freq]
+
+    @property
+    def news(self):
+        return self.__analyzer._news
+
+    def process(self):
+        self.__analyzer.process()
 
     @final
     def step(
@@ -2477,8 +2550,20 @@ def main():
     return bitstamp
 
 
+def gen(arr) -> CZSCAnalyzer:
+    g = KlineGenerator(arr)
+
+    c = CZSCAnalyzer("test", 60, [])
+    for b in g.result:
+        c.push(b)
+    return c
+
+
 if __name__ == "__main__":
     bit = main()
-    bit.save_file()
-    # bit = Bitstamp.load_file("btcusd-14400-1600416000-1715601600.dat")
-    # bit.toCharts()
+    # bit.save_file()
+    # bit = Bitstamp.load_file("btcusd-300-1713692700-1716092400.dat")
+    # bit.process()
+    # bit = gen([144,152,148,156,153,161,156,167,155])
+
+    bit.toCharts()
