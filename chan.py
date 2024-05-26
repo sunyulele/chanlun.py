@@ -120,7 +120,7 @@ def dp(*args, **kwords):
 
 
 def bdp(*args, **kwargs):
-    if not 0:
+    if not 1:
         dp(*args, **kwargs)
 
 
@@ -691,9 +691,11 @@ class NewBar(BaseItem):
 
         if shape is Shape.G:
             mid.speck = mid.high
+            right.speck = right.high
 
         if shape is Shape.D:
             mid.speck = mid.low
+            right.speck = right.low
 
         if shape is Shape.S:
             right.speck = right.high
@@ -2684,7 +2686,7 @@ def gen(arr) -> CZSCAnalyzer:
 
 
 if __name__ == "__main__":
-    # bit = main()
+    #bit = main()
     # bit.save_file()
     bit = Bitstamp.load_file("btcusd-300-1713692700-1716092400.dat")
     bit.process()
