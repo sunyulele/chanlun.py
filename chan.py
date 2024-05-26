@@ -286,7 +286,7 @@ class BaseItem:
     __slots__ = "cache", "elements", "done", "index"
     fast = 12
     slow = 26
-    signal = 26
+    signal = 9
 
     def __init__(self, index=0):
         self.cache = dict()
@@ -335,6 +335,7 @@ class RawBar(BaseItem):
         timestamp, open, high, low, close, vol = struct.unpack(">6d", buf)
         return cls(dt=datetime.fromtimestamp(timestamp), open=open, high=high, low=low, close=close, volume=vol)
 
+    @property
     def macd(self) -> float:
         return self.cache[f"macd_{BaseItem.fast}_{BaseItem.slow}_{BaseItem.signal}"]
 
@@ -506,7 +507,7 @@ class RawBars:
             ma = sum([k.close for k in klines[-timeperiod:]]) / timeperiod
         klines[-1].cache[f"ma_{timeperiod}"] = ma
 
-    def calcMACD(self, klines, fastperiod=12, slowperiod=26, signalperiod=9):
+    def calcMACD(self, klines, fastperiod=BaseItem.fast, slowperiod=BaseItem.slow, signalperiod=BaseItem.signal):
         self.calcEMA(klines, fastperiod)
         self.calcEMA(klines, slowperiod)
         DIF = klines[-1].cache[f"ema_{fastperiod}"] - klines[-1].cache[f"ema_{slowperiod}"]
@@ -633,7 +634,7 @@ class NewBar(BaseItem):
         return new, flag
 
     @staticmethod
-    def analyzer(bar: RawBar, news: List["NewBar"], fast_period: int = 12, slow_period: int = 26, signal_period: int = 9):
+    def analyzer(bar: RawBar, news: List["NewBar"], fast_period: int = BaseItem.fast, slow_period: int = BaseItem.slow, signal_period: int = BaseItem.signal):
         last = news[-1] if news else None
         if last is None:
             news.append(bar.new)
@@ -1741,7 +1742,7 @@ class BaseAnalyzer:
         self._duan_zss: List[ZhongShu] = []  # 由线段构成的中枢列表
 
         self._zss: List[ZouShi] = []  # 走势
-        self._macd_config = MACDConfig(12, 26, 9)
+        # self._macd_config = MACDConfig(12, 26, 9)
 
     @property
     def symbol(self) -> str:
@@ -1753,7 +1754,7 @@ class BaseAnalyzer:
 
     def xd_zs_bc(self): ...
 
-    def push(self, bar: RawBar, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9):
+    def push(self, bar: RawBar, fast_period: int = BaseItem.fast, slow_period: int = BaseItem.slow, signal_period: int = BaseItem.signal):
         last = self._news[-1] if self._news else None
         news = self._news
         if last is None:
@@ -2686,10 +2687,10 @@ def gen(arr) -> CZSCAnalyzer:
 
 
 if __name__ == "__main__":
-    #bit = main()
+    bit = main()
     # bit.save_file()
-    bit = Bitstamp.load_file("btcusd-300-1713692700-1716092400.dat")
+    # bit = Bitstamp.load_file("btcusd-300-1713692700-1716092400.dat")
     bit.process()
     # bit = gen([144,152,148,156,153,161,156,167,155])
 
-    bit.toCharts()
+    bit.toCharts("czsc-process.html")
