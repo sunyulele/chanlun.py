@@ -1547,7 +1547,10 @@ class BaseAnalyzer:
             if relation is Direction.Left:
                 left.add(bi)
             elif relation is Direction.Right:
-                duan.features = [left, feature, None]
+                if last is not None:
+                    left.add(bi)
+                else:
+                    duan.features = [left, feature, None]
 
             elif relation in (Direction.Up, Direction.JumpUp):
                 if duan.direction is Direction.Up:
@@ -1592,7 +1595,10 @@ class BaseAnalyzer:
                 mid.add(bi)
 
             elif relation is Direction.Right:
-                duan.features = [mid, feature, None]
+                if last is not None:
+                    mid.add(bi)
+                else:
+                    duan.features = [mid, feature, None]
 
             elif relation in (Direction.Up, Direction.JumpUp):
                 if duan.direction is Direction.Up:
