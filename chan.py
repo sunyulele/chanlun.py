@@ -240,6 +240,38 @@ def triple_relation(left, mid, right, use_right=False) -> tuple[Optional[Shape],
             shape = Shape.T  # 喇叭口型
     return shape, (lm, mr)
 
+def double_scope(left, right) -> tuple[bool, Optional["Pillar"]]:
+    """
+    计算重叠范围
+    """
+    assert left.low < left.high
+    assert right.low < right.high
+
+    if left.low < right.high <= left.high:
+        # 向下
+        return True, Pillar(right.high, left.low)
+    if left.low <= right.low < left.high:
+        # 向上
+        return True, Pillar(left.high, right.low)
+    if left.low <= right.low and left.high >= right.high:
+        return True, Pillar(right.high, right.low)
+    if left.low >= right.low and left.high <= right.high:
+        return True, Pillar(left.high, left.low)
+
+    return False, None
+
+
+def triple_scope(left, mid, right) -> tuple[bool, Optional["Pillar"]]:
+    b, p = double_scope(left, mid)
+    if b:
+        return double_scope(p, right)
+    return False, None
+
+class Pillar:
+    def __init__(self, high: float, low: float):
+        self.low = low
+        self.high = high
+
 
 class RawBar:
     __slots__ = "dt", "open", "high", "low", "close", "volume", "index", "cache", "done", "dts", "lv", "start_include", "belong_include"
@@ -681,6 +713,34 @@ class Bi:
     @property
     def length(self) -> int:
         return len(self.elements)
+
+    def check(self) -> bool:
+        if len(self.elements) >= 5:
+            assert self.start.mid is self.elements[0]
+            assert self.end.mid is self.elements[-1]
+            if self.direction is Direction.Down and self.start.mid is self.real_high and self.end.mid is self.real_low:
+                return True
+            if self.direction is Direction.Up and self.start.mid is self.real_low and self.end.mid is self.real_high:
+                return True
+        return False
+
+    @staticmethod
+    def append(bis, bi):
+        if bis and bis[-1].end is not bi.start:
+            raise TypeError("笔连续性错误")
+        i = 0
+        if bis:
+            i = bis[-1].index + 1
+        bi.index = i
+        bis.append(bi)
+
+    @staticmethod
+    def pop(bis, fx):
+        if bis:
+            if bis[-1].end is fx:
+                return bis.pop()
+            else:
+                raise ValueError("最后一笔终点错误", fx, bis[-1].end)
 
     @staticmethod
     def analyzer(fx: FenXing, fxs: List[FenXing], bis: List["Bi"], cklines: List[NewBar]):
@@ -1528,7 +1588,7 @@ class BaseAnalyzer:
     def freq(self) -> int:
         return self.__freq
 
-    def push(self, bar: RawBar):
+    def push(self, bar: RawBar, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9):
         last = self._news[-1] if self._news else None
         news = self._news
         if last is None:
@@ -1549,7 +1609,28 @@ class BaseAnalyzer:
                 new = bar.new
                 new.index = last.index + 1
                 news.append(new)
+                
+        klines = news
+        if len(klines) == 1:
+            ema_slow = klines[-1].close
+            ema_fast = klines[-1].close
+        else:
+            ema_slow = (2 * klines[-1].close + klines[-2].cache[f"ema_{slow_period}"] * (slow_period - 1)) / (slow_period + 1)
+            ema_fast = (2 * klines[-1].close + klines[-2].cache[f"ema_{fast_period}"] * (fast_period - 1)) / (fast_period + 1)
+        klines[-1].cache[f"ema_{slow_period}"] = ema_slow
+        klines[-1].cache[f"ema_{fast_period}"] = ema_fast
+        DIF = ema_fast - ema_slow
+        klines[-1].cache[f"dif_{fast_period}_{slow_period}_{signal_period}"] = DIF
 
+        if len(klines) == 1:
+            dea = DIF
+        else:
+            dea = (2 * DIF + klines[-2].cache[f"dea_{fast_period}_{slow_period}_{signal_period}"] * (signal_period - 1)) / (signal_period + 1)
+
+        klines[-1].cache[f"dea_{fast_period}_{slow_period}_{signal_period}"] = dea
+        macd = (DIF - dea) * 2
+        klines[-1].cache[f"macd_{fast_period}_{slow_period}_{signal_period}"] = macd
+        
         try:
             left, mid, right = news[-3:]
         except ValueError:
@@ -1640,6 +1721,21 @@ class BaseAnalyzer:
                     self.__push_bi(bi, level)
                 else:
                     ...
+                    # 2024 05 21 修正
+                    _cklines = cklines[last.mid.index :]
+                    _fx, _bi = Bi.analysis_one(_cklines)
+
+                    if _bi:
+                        nb = Bi(0, fxs[-3], _bi.start, cklines[fxs[-3].mid.index : _bi.start.mid.index + 1])
+                        if not nb.check():
+                            return
+                        print(_bi)
+                        tmp = fxs.pop()
+                        assert tmp is last
+                        # tmp.real = False
+                        self.__pop_bi(tmp, level)
+                        self.__analysis_fx(_bi.start, cklines, level + 1)  # 处理新底
+                        self.__analysis_fx(_bi.end, cklines, level + 1)  # 再处理当前顶
             else:
                 ...
 
@@ -1661,6 +1757,21 @@ class BaseAnalyzer:
                     self.__push_bi(bi, level)
                 else:
                     ...
+                    # 2024 05 21 修正
+                    _cklines = cklines[last.mid.index :]
+                    _fx, _bi = Bi.analysis_one(_cklines)
+
+                    if _bi:
+                        nb = Bi(0, fxs[-3], _bi.start, cklines[fxs[-3].mid.index : _bi.start.mid.index + 1])
+                        if not nb.check():
+                            return
+                        print(_bi)
+                        tmp = fxs.pop()
+                        assert tmp is last
+                        # tmp.real = False
+                        self.__pop_bi(tmp, level)
+                        self.__analysis_fx(_bi.start, cklines, level + 1)  # 处理新底
+                        self.__analysis_fx(_bi.end, cklines, level + 1)  # 再处理当前顶
             else:
                 ...
 
