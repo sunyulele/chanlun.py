@@ -738,7 +738,7 @@ class Bi(BaseItem):
 
     @property
     def relation(self) -> bool:
-        print(double_relation(self.start, self.end), self.direction)
+        #print(double_relation(self.start, self.end), self.direction)
         if self.direction is Direction.Down:
             return double_relation(self.start, self.end) in (
                 Direction.Down,
@@ -812,7 +812,7 @@ class Bi(BaseItem):
                     _cklines = cklines[last.mid.index :]
                     _fx, _bi = Bi.analysis_one(_cklines)
 
-                    if _bi:
+                    if _bi and len(fxs) > 2:
                         nb = Bi(0, fxs[-3], _bi.start, cklines[fxs[-3].mid.index : _bi.start.mid.index + 1])
                         if not nb.check():
                             return
@@ -846,7 +846,7 @@ class Bi(BaseItem):
                     _cklines = cklines[last.mid.index :]
                     _fx, _bi = Bi.analysis_one(_cklines)
 
-                    if _bi:
+                    if _bi and len(fxs) > 2:
                         nb = Bi(0, fxs[-3], _bi.start, cklines[fxs[-3].mid.index : _bi.start.mid.index + 1])
                         if not nb.check():
                             return
@@ -1412,7 +1412,7 @@ class ZhongShu(BaseItem):
             raise ChanException("中枢无法添加元素", self.last, obj)
 
     @staticmethod
-    def analyzer(elements: List[Union[Bi, Duan]]) -> tuple[bool, list]:
+    def analyzer2(elements: List[Union[Bi, Duan]]) -> tuple[bool, list]:
         if len(elements) < 3:
             return False, []
         direction = elements[0].direction
@@ -1436,6 +1436,46 @@ class ZhongShu(BaseItem):
                 new_zs = ZhongShu(obj)
                 zss.append(new_zs)
         return True, zss
+
+    @staticmethod
+    def analyzer(obj: [Bi, Duan], zss: List["ZhongShu"], objs: List[Union[Bi, Duan]]):
+        # bis = self._bis
+        # zss = self._bi_zss
+        new = ZhongShu(obj)
+        if not zss:
+            zss.append(new)
+            return
+        zs = zss[-1]
+
+        if len(zs.elements) >= 3:
+            relation = double_relation(zs, obj)
+            if relation in (Direction.JumpUp, Direction.JumpDown):
+                zss.append(new)
+
+            else:
+                zs.append_element(obj)
+        elif len(zs.elements) == 2:
+            if double_relation(zs.elements[0], obj) in (Direction.JumpUp, Direction.JumpDown):
+                # 这里需要判断走势
+                zss.pop()
+                zss.append(new)
+            else:
+                zs.append_element(obj)
+
+        elif len(zs.elements) == 1:
+            if zs.elements[0].index > 1:
+                relation = double_relation(objs[objs.index(zs.elements[0]) - 2], zs.elements[0])
+                if (zs.elements[0].direction is Direction.Up and relation is Direction.Up) or (zs.elements[0].direction is Direction.Down and relation is Direction.Down):
+                    zss.pop()
+                    zss.append(new)
+                else:
+                    zs.append_element(obj)
+            else:
+                zs.append_element(obj)
+
+        else:
+            zss.pop()
+            zss.append(new)
 
     def charts(self):
         return [
@@ -2312,12 +2352,24 @@ class BaseAnalyzer:
                     self.__pop_bi_zs(obj)
 
     def process(self):
+        # self._news.clear()
+        self._fxs.clear()
+        self._bis.clear()
         self._duans.clear()
         self._bi_zss.clear()
         self._duan_zss.clear()
         self._zss.clear()
+
+        for i in range(1, len(self._news) - 1):
+            fx = FenXing(self._news[i - 1], self._news[i], self._news[i + 1])
+            Bi.analyzer(fx, self._fxs, self._bis, self._news)
+
         for bi in self._bis:
-            self.__push_duan(bi)
+            Duan.analyzer(bi, self._duans)
+            ZhongShu.analyzer(bi, self._bi_zss, self._bis)
+
+        for duan in self._duans:
+            ZhongShu.analyzer(duan, self._duan_zss, self._duans)
 
     def toCharts(self, path: str = "czsc.html", useReal=False):
         import echarts_plot  # czsc
@@ -2560,10 +2612,10 @@ def gen(arr) -> CZSCAnalyzer:
 
 
 if __name__ == "__main__":
-    bit = main()
+    # bit = main()
     # bit.save_file()
-    # bit = Bitstamp.load_file("btcusd-300-1713692700-1716092400.dat")
-    # bit.process()
+    bit = Bitstamp.load_file("btcusd-300-1713692700-1716092400.dat")
+    bit.process()
     # bit = gen([144,152,148,156,153,161,156,167,155])
 
     bit.toCharts()
