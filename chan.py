@@ -682,6 +682,233 @@ class Bi:
     def length(self) -> int:
         return len(self.elements)
 
+    @staticmethod
+    def analyzer(fx: FenXing, fxs: List[FenXing], bis: List["Bi"], cklines: List[NewBar]):
+        last = fxs[-1] if fxs else None
+        left, mid, right = fx.left, fx.mid, fx.right
+        if last is None:
+            if mid.shape in (Shape.G, Shape.D):
+                fxs.append(fx)
+            return
+
+        if last.mid.dt > fx.mid.dt:
+            raise TypeError("时序错误")
+
+        if last.shape is Shape.G and fx.shape is Shape.D:
+            bi = Bi(0, last, fx, cklines[cklines.index(last.mid) : cklines.index(fx.mid) + 1])
+            if bi.length > 4:
+                if bi.real_high is not last.mid:
+                    print("不是真顶")
+                    top = bi.real_high
+                    new = FenXing(cklines[cklines.index(top) - 1], top, cklines[cklines.index(top) + 1])
+                    assert new.shape is Shape.G, new
+                    Bi.analyzer(new, fxs, bis, cklines)  # 处理新底
+                    Bi.analyzer(fx, fxs, bis, cklines)  # 再处理当前顶
+                    return
+                flag = bi.relation
+                if flag and fx.mid is bi.real_low:
+                    FenXing.append(fxs, fx)
+                    Bi.append(bis, bi)
+
+                else:
+                    ...
+                    # 2024 05 21 修正
+                    _cklines = cklines[last.mid.index :]
+                    _fx, _bi = Bi.analysis_one(_cklines)
+
+                    if _bi:
+                        nb = Bi(0, fxs[-3], _bi.start, cklines[fxs[-3].mid.index : _bi.start.mid.index + 1])
+                        if not nb.check():
+                            return
+                        print(_bi)
+                        tmp = fxs.pop()
+                        assert tmp is last
+                        # tmp.real = False
+                        bi = Bi.pop(bis, tmp)
+            else:
+                ...
+
+        elif last.shape is Shape.D and fx.shape is Shape.G:
+            bi = Bi(0, last, fx, cklines[cklines.index(last.mid) : cklines.index(fx.mid) + 1])
+            if bi.length > 4:
+                if bi.real_low is not last.mid:
+                    print("不是真底")
+                    bottom = bi.real_low
+                    new = FenXing(cklines[cklines.index(bottom) - 1], bottom, cklines[cklines.index(bottom) + 1])
+                    assert new.shape is Shape.D, new
+                    Bi.analyzer(new, fxs, bis, cklines)  # 处理新底
+                    Bi.analyzer(fx, fxs, bis, cklines)  # 再处理当前顶
+                    return
+                flag = bi.relation
+                if flag and fx.mid is bi.real_high:
+                    FenXing.append(fxs, fx)
+                    Bi.append(bis, bi)
+
+                else:
+                    ...
+                    # 2024 05 21 修正
+                    _cklines = cklines[last.mid.index :]
+                    _fx, _bi = Bi.analysis_one(_cklines)
+
+                    if _bi:
+                        nb = Bi(0, fxs[-3], _bi.start, cklines[fxs[-3].mid.index : _bi.start.mid.index + 1])
+                        if not nb.check():
+                            return
+                        print(_bi)
+                        tmp = fxs.pop()
+                        assert tmp is last
+                        # tmp.real = False
+                        bi = Bi.pop(bis, tmp)
+            else:
+                ...
+
+        elif last.shape is Shape.G and fx.shape is Shape.S:
+            if last.speck < right.high:
+                tmp = fxs.pop()
+                tmp.real = False
+                bi = Bi.pop(bis, tmp)
+
+                if fxs:
+                    # 查找
+                    last = fxs[-1]
+                    assert last.shape is Shape.D
+                    bottom = min(cklines[cklines.index(last.mid) : cklines.index(fx.mid) + 1], key=lambda o: o.low)
+                    assert bottom.shape is Shape.D
+                    if last.speck > bottom.low:
+                        tmp = fxs.pop()
+                        tmp.real = False
+                        bi = Bi.pop(bis, tmp)
+
+                        new = FenXing(cklines[cklines.index(bottom) - 1], bottom, cklines[cklines.index(bottom) + 1])
+                        assert new.shape is Shape.D, new
+                        Bi.analyzer(new, fxs, bis, cklines)  # 处理新底
+                        print("GS修正")
+
+        elif last.shape is Shape.D and fx.shape is Shape.X:
+            if last.speck > right.low:
+                """
+                底分型被突破
+                1. 向上不成笔但出了高点，需要修正顶分型
+                   修正后涉及循环破坏问题，即形似开口向右的扩散形态
+                   解决方式
+                       ①.递归调用，完全符合笔的规则，但此笔一定含有多个笔，甚至形成低级别一个走势。
+                       ②.只修正一次
+                2. 向上不成笔没出了高点，无需修正
+                """
+                tmp = fxs.pop()
+                tmp.real = False
+                bi = Bi.pop(bis, tmp)
+
+                if fxs:
+                    # 查找
+                    last = fxs[-1]
+                    assert last.shape is Shape.G
+                    top = max(cklines[cklines.index(last.mid) : cklines.index(fx.mid) + 1], key=lambda o: o.high)
+                    assert top.shape is Shape.G
+                    if last.speck < top.high:
+                        tmp = fxs.pop()
+                        tmp.real = False
+                        bi = Bi.pop(bis, tmp)
+
+                        new = FenXing(cklines[cklines.index(top) - 1], top, cklines[cklines.index(top) + 1])
+                        assert new.shape is Shape.G, new
+                        Bi.analyzer(new, fxs, bis, cklines)  # 处理新顶
+                        print("DX修正")
+
+        elif last.shape is Shape.G and fx.shape is Shape.G:
+            if last.speck < fx.speck:
+                tmp = fxs.pop()
+                tmp.real = False
+                bi = Bi.pop(bis, tmp)
+
+                if fxs:
+                    # 查找
+                    last = fxs[-1]
+                    assert last.shape is Shape.D
+                    bottom = min(cklines[cklines.index(last.mid) : cklines.index(fx.mid) + 1], key=lambda o: o.low)
+                    assert bottom.shape is Shape.D
+                    if last.speck > bottom.low:
+                        tmp = fxs.pop()
+                        tmp.real = False
+                        bi = Bi.pop(bis, tmp)
+
+                        new = FenXing(cklines[cklines.index(bottom) - 1], bottom, cklines[cklines.index(bottom) + 1])
+                        assert new.shape is Shape.D, new
+                        Bi.analyzer(new, fxs, bis, cklines)  # 处理新底
+                        Bi.analyzer(fx, fxs, bis, cklines)  # 再处理当前顶
+                        print("GG修正")
+                        return
+
+                if not fxs:
+                    FenXing.append(fxs, fx)
+                    return
+                bi = Bi(0, fxs[-1], fx, cklines[cklines.index(fxs[-1].mid) : cklines.index(fx.mid) + 1])
+                FenXing.append(fxs, fx)
+                Bi.append(bis, bi)
+
+        elif last.shape is Shape.D and fx.shape is Shape.D:
+            if last.speck > fx.speck:
+                tmp = fxs.pop()
+                tmp.real = False
+                bi = Bi.pop(bis, tmp)
+
+                if fxs:
+                    # 查找
+                    last = fxs[-1]
+                    assert last.shape is Shape.G
+                    top = max(cklines[cklines.index(last.mid) : cklines.index(fx.mid) + 1], key=lambda o: o.high)
+                    assert top.shape is Shape.G
+                    if last.speck < top.high:
+                        tmp = fxs.pop()
+                        tmp.real = False
+                        bi = Bi.pop(bis, tmp)
+
+                        new = FenXing(cklines[cklines.index(top) - 1], top, cklines[cklines.index(top) + 1])
+                        assert new.shape is Shape.G, new
+                        Bi.analyzer(new, fxs, bis, cklines)  # 处理新顶
+                        Bi.analyzer(fx, fxs, bis, cklines)  # 再处理当前底
+                        print("DD修正")
+                        return
+
+                if not fxs:
+                    FenXing.append(fxs, fx)
+                    return
+                bi = Bi(0, fxs[-1], fx, cklines[cklines.index(fxs[-1].mid) : cklines.index(fx.mid) + 1])
+                FenXing.append(fxs, fx)
+                Bi.append(bis, bi)
+
+        elif last.shape is Shape.G and fx.shape is Shape.X:
+            ...
+
+        elif last.shape is Shape.D and fx.shape is Shape.S:
+            ...
+
+        else:
+            raise ValueError(last.shape, fx.shape)
+
+    @staticmethod
+    def analysis_one(cklines: List[NewBar]) -> tuple[Optional[FenXing], Optional["Bi"]]:
+        try:
+            cklines[2]
+        except IndexError:
+            return None, None
+        bis = []
+        fxs = []
+        fx = None
+        size = len(cklines)
+        for i in range(1, size - 2):
+            left, mid, right = cklines[i - 1], cklines[i], cklines[i + 1]
+
+            fx = FenXing(left, mid, right)
+            Bi.analyzer(fx, fxs, bis, cklines)
+            if bis:
+                return fx, bis[0]
+        if bis:
+            return fx, bis[0]
+
+        return None, None
+
+
 
 class Duan:
     __slots__ = "index", "__start", "__end", "elements", "done", "pre", "features", "info", "direction", "level"
@@ -826,6 +1053,144 @@ class Duan:
         if len(self.elements) >= 3:
             if double_relation(self.elements[0], self.elements[2]) in (Direction.JumpUp, Direction.JumpDown):
                 raise ChanException("线段前3笔没有重叠")
+
+    @staticmethod
+    def analyzer(bi: Bi, xds: list["Duan"], level: int = 0):
+        cmd = "Duans.PUSH"
+        new = Duan(0, bi.start, bi.end, [bi])
+        if not xds:
+            xds.append(new)
+            return
+        duan: Duan = xds[-1]
+        state: States = duan.state
+        last: Optional[Duan] = duan.pre
+        # last = duans[-2] if len(duans) > 1 else last
+        left: Optional[FeatureSequence] = duan.features[0]
+        mid: Optional[FeatureSequence] = duan.features[1]
+        # right: Optional[FeatureSequence] = duan.features[2]
+        lmr: Tuple[bool, bool, bool] = duan.lmr
+
+        ddp("    " * level, cmd, state, lmr, duan, bi)
+        ddp("    " * level, duan.features)
+        ddp("    " * level, duan.elements)
+
+        duan.append_element(bi)
+        if duan.direction is bi.direction:
+            if duan.mid:
+                duan.end = duan.mid.start
+            else:
+                duan.end = bi.end
+            ddp("    " * level, "方向相同, 更新结束点", duan.end, duan.state)
+            return
+
+        feature = FeatureSequence({bi}, Direction.Up if bi.direction is Direction.Down else Direction.Down)
+        if lmr == (False, False, False):
+            assert feature.direction is duan.direction
+            duan.features = [feature, None, None]
+
+        elif lmr == (True, False, False):
+            assert left.direction is duan.direction
+            relation = double_relation(left, bi)
+            ddp("    " * level, "第二特征序列", relation, duan.state)
+            if relation is Direction.Left:
+                left.add(bi)
+            elif relation is Direction.Right:
+                if last is not None:
+                    left.add(bi)
+                else:
+                    duan.features = [left, feature, None]
+
+            elif relation in (Direction.Up, Direction.JumpUp):
+                if duan.direction is Direction.Up:
+                    duan.features = [left, feature, None]
+                else:
+                    # Down
+                    duan.features = [left, feature, None]
+
+            elif relation in (Direction.Down, Direction.JumpDown):
+                if duan.direction is Direction.Down:
+                    duan.features = [left, feature, None]
+                else:
+                    # Up
+                    duan.features = [left, feature, None]
+
+            else:
+                raise ChanException("未知的关系", relation)
+
+        elif lmr == (True, True, False):
+            assert mid.direction is duan.direction
+            relation = double_relation(mid, bi)
+            ddp("    " * level, "第三特征序列", relation, duan.state)
+            if relation is Direction.Left:
+                mid.add(bi)
+
+            elif relation is Direction.Right:
+                if last is not None:
+                    mid.add(bi)
+                else:
+                    duan.features = [mid, feature, None]
+
+            elif relation in (Direction.Up, Direction.JumpUp):
+                if duan.direction is Direction.Up:
+                    duan.features = [mid, feature, None]
+                else:
+                    # Down, 底分型
+                    duan.features = [left, mid, feature]
+                    duan.end = mid.start
+                    duan.done = True
+                    elements = duan.set_done(mid.start)
+
+                    new = Duan.new(duan.index + 1, elements[0])
+                    new.elements = elements
+                    new.end = elements[-1].end
+                    if double_relation(left, mid) is Direction.JumpDown:
+                        duan.pre = new
+                    ddp("    " * level, "底分型终结", duan.pre is not None, elements[0].direction)
+                    features = FeatureSequence.analysis(elements, new.direction)
+                    if features:
+                        new.features = [features[-1], None, None]
+                        if len(features) > 1:
+                            new.features = [features[-2], features[-1], None]
+                    if duan.end is new.start:
+                        xds.append(new)
+
+                    else:
+                        raise ChanException("线段不连续", duan.elements[-1].end, new.elements[0].start)
+
+            elif relation in (Direction.Down, Direction.JumpDown):
+                if duan.direction is Direction.Down:
+                    duan.features = [mid, feature, None]
+                else:
+                    # Up, 顶分型
+                    duan.features = [left, mid, feature]
+                    duan.end = mid.start
+                    duan.done = True
+                    elements = duan.set_done(mid.start)
+
+                    new = Duan.new(duan.index + 1, elements[0])
+                    new.elements = elements
+                    new.end = elements[-1].end
+                    if double_relation(left, mid) is Direction.JumpUp:
+                        duan.pre = new
+                    ddp("    " * level, "顶分型终结", duan.pre is not None, elements[0].direction)
+                    features = FeatureSequence.analysis(elements, new.direction)
+                    if features:
+                        new.features = [features[-1], None, None]
+                        if len(features) > 1:
+                            new.features = [features[-2], features[-1], None]
+
+                    if duan.end is new.start:
+                        xds.append(new)
+                    else:
+                        raise ChanException("线段不连续", duan.elements[-1].end, new.elements[0].start)
+
+            else:
+                raise ChanException("未知的关系", relation)
+
+        else:
+            raise ChanException("未知的状态", state, lmr)
+
+        # duans[-1].check()
 
 
 class ZhongShu:
