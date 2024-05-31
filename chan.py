@@ -12,11 +12,15 @@ from pathlib import Path
 from typing import List, Union, Self, Literal, Optional, Tuple, final, Dict, Iterable
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from importlib import reload
 from enum import Enum
 
 import requests
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+import asyncio
+import json
 
 try:
     from termcolor import colored
@@ -126,6 +130,11 @@ def bdp(*args, **kwargs):
 
 def ddp(*args, **kwargs):
     if not 1:
+        dp(*args, **kwargs)
+
+
+def zsdp(*args, **kwargs):
+    if not 0:
         dp(*args, **kwargs)
 
 
@@ -280,6 +289,12 @@ class Pillar:
     def __init__(self, high: float, low: float):
         self.low = low
         self.high = high
+
+    def __str__(self):
+        return f"Pillar({self.high}, {self.low})"
+
+    def __repr__(self):
+        return f"Pillar({self.high}, {self.low})"
 
 
 class BaseItem:
@@ -1392,10 +1407,10 @@ class ZhongShu(BaseItem):
             self.level = 2
 
     def __str__(self):
-        return f"中枢({self.elements})"
+        return f"中枢({self.index}, {self.direction}, {self.zg}, {self.zd}, elements size={len(self.elements)}, {self.last})"
 
     def __repr__(self):
-        return f"中枢({self.elements})"
+        return f"中枢({self.index}, {self.direction}, {self.zg}, {self.zd}, elements size={len(self.elements)}, {self.last})"
 
     @property
     def left(self) -> Union[Bi, Duan, RawBar, NewBar]:
@@ -1484,70 +1499,79 @@ class ZhongShu(BaseItem):
             raise ChanException("中枢无法添加元素", self.last, obj)
 
     @staticmethod
-    def analyzer2(elements: List[Union[Bi, Duan]]) -> tuple[bool, list]:
-        if len(elements) < 3:
-            return False, []
-        direction = elements[0].direction
-        flag = False
-        zss: List[Union[Bi, Duan, ZhongShu]] = [elements[0]]
-        for obj in elements[1:]:
-            last: Union[Bi, Duan, ZhongShu] = zss[-1]
-            zs = [o for o in zss if type(o) is ZhongShu]
-            last_zs: ZhongShu = zs[-1] if zs else None
-            if last_zs and last_zs.elements[-1].end is obj.start:
-                if double_relation(last_zs, obj) in (Direction.JumpUp, Direction.JumpDown):
-                    if last_zs.right is not None:
-                        new_zs = ZhongShu(obj)
-                        zss.append(new_zs)
-                    else:
-                        o = last_zs.elements.pop(0)
-                        zss.insert(zss.index(last_zs), o)
-                else:
-                    last_zs.append_element(obj)
-            else:
-                new_zs = ZhongShu(obj)
-                zss.append(new_zs)
-        return True, zss
+    def pop(obj: Union[Bi, Duan], zss: List["ZhongShu"], level: int):
+        cmd = "ZS.POP"
+        if not zss:
+            return
+
+        last = zss[-1]
+        zsdp("    " * level, cmd, obj in last.elements, obj)
+        last.pop_element(obj)
+        if last.last is None:
+            zss.pop()
+            if zss:
+                last = zss[-1]
+                if obj is last.last:
+                    dp("递归删除中枢元素", obj)
+                    ZhongShu.pop(obj, zss, level)
 
     @staticmethod
-    def analyzer(obj: [Bi, Duan], zss: List["ZhongShu"], objs: List[Union[Bi, Duan]]):
-        # bis = self._bis
-        # zss = self._bi_zss
+    def push(obj: Union[Bi, Duan], zss: List["ZhongShu"], objs: List[Union[Bi, Duan]], level: int):
+        cmd = "ZS.PUSH"
         new = ZhongShu(obj)
         if not zss:
             zss.append(new)
             return
-        zs = zss[-1]
+        last = zss[-1]
+        zsdp("    " * level, cmd, len(last.elements), obj)
 
-        if len(zs.elements) >= 3:
-            relation = double_relation(zs, obj)
+        if len(last.elements) >= 3:
+            relation = double_relation(last, obj)
             if relation in (Direction.JumpUp, Direction.JumpDown):
                 zss.append(new)
+                zsdp("    " * level, cmd, "添加新中枢", new)
 
             else:
-                zs.append_element(obj)
-        elif len(zs.elements) == 2:
-            if double_relation(zs.elements[0], obj) in (Direction.JumpUp, Direction.JumpDown):
+                last.append_element(obj)
+
+        elif len(last.elements) == 2:
+            flag, scope = triple_scope(last.left, last.mid, obj)
+            zsdp("    " * level, cmd, "中枢范围:", flag, scope)
+            if scope is None:
                 # 这里需要判断走势
-                zss.pop()
-                zss.append(new)
-            else:
-                zs.append_element(obj)
-
-        elif len(zs.elements) == 1:
-            if zs.elements[0].index > 1:
-                relation = double_relation(objs[objs.index(zs.elements[0]) - 2], zs.elements[0])
-                if (zs.elements[0].direction is Direction.Up and relation is Direction.Up) or (zs.elements[0].direction is Direction.Down and relation is Direction.Down):
+                if obj.done is False:
+                    last.append_element(obj)
+                else:
                     zss.pop()
                     zss.append(new)
-                else:
-                    zs.append_element(obj)
+                    zsdp("    " * level, cmd, "不满足中枢条件弹出并添加新中枢", new)
             else:
-                zs.append_element(obj)
+                last.append_element(obj)
+
+        elif len(last.elements) == 1:
+            if last.elements[0].index > 1:
+                relation = double_relation(objs[last.elements[0].index - 2], last.elements[0])
+                if (last.elements[0].direction is Direction.Up and relation is Direction.Up) or (last.elements[0].direction is Direction.Down and relation is Direction.Down):
+                    zss.pop()
+                    zss.append(new)
+                    zsdp("    " * level, cmd, "不满足中枢条件弹出并添加新中枢2", new)
+                else:
+                    last.append_element(obj)
+            else:
+                last.append_element(obj)
 
         else:
             zss.pop()
             zss.append(new)
+
+    @staticmethod
+    def analyzer(elements: List[Union[Bi, Duan]]) -> tuple[bool, list]:
+        if len(elements) < 3:
+            return False, []
+        zss: List[Union[Bi, Duan, ZhongShu]] = []
+        for obj in elements:
+            ZhongShu.push(obj, zss, elements, 0)
+        return len(zss) > 0, zss
 
     def charts(self):
         return [
@@ -1828,7 +1852,7 @@ class BaseAnalyzer:
                 bi = self._bis.pop()
                 bdp("    " * level, cmd, bi)
                 fx.mid.bi = False
-                self.__pop_bi_zs(bi)
+                self.__pop_bi_zs(bi, level)
                 self.__pop_duan(bi, level)
 
             else:
@@ -1850,7 +1874,7 @@ class BaseAnalyzer:
         self._bis.append(bi)
         bi.start.mid.bi = True
         bi.end.mid.bi = True
-        self.__push_bi_zs(bi)
+        self.__push_bi_zs(bi, level)
         self.__push_duan(bi, level)
 
     def __analysis_fx(self, fx: FenXing, cklines: List[NewBar], level: int):
@@ -2089,8 +2113,10 @@ class BaseAnalyzer:
         lmr: Tuple[bool, bool, bool] = duan.lmr
 
         ddp("    " * level, cmd, state, lmr, duan, bi)
-        ddp("    " * level, duan.features)
-        ddp("    " * level, duan.elements)
+        # ddp("    " * level, duan.features)
+        # ddp("    " * level, duan.elements)
+        if self._duan_zss:
+            ddp("    " * level, "当前中枢", self._duan_zss[-1])
 
         duan.pop_element(bi)
 
@@ -2098,7 +2124,7 @@ class BaseAnalyzer:
             if (last.right and bi in last.right) or (last.right is None and bi in last.left):
                 # Duan.pop(duans, duan, ZShandler)
                 assert duans.pop() is duan
-                self.__pop_duan_zs(duan)
+                self.__pop_duan_zs(duan, level)
                 last.pop_element(bi)
                 last.features = [last.left, last.mid, None]
                 return
@@ -2108,7 +2134,7 @@ class BaseAnalyzer:
                 raise ChanException("线段中有多个元素，但特征序列为空")
             # Duan.pop(duans, duan, ZShandler)
             assert duans.pop() is duan
-            self.__pop_duan_zs(duan)
+            self.__pop_duan_zs(duan, level)
 
             if last is not None:
                 last.pop_element(bi)
@@ -2154,7 +2180,7 @@ class BaseAnalyzer:
         if not duans:
             duan = Duan.new(0, bi)
             duans.append(duan)
-            self.__push_duan_zs(duan)
+            self.__push_duan_zs(duan, level)
             return
 
         duan: Duan = duans[-1]
@@ -2167,8 +2193,10 @@ class BaseAnalyzer:
         lmr: Tuple[bool, bool, bool] = duan.lmr
 
         ddp("    " * level, cmd, state, lmr, duan, bi)
-        ddp("    " * level, duan.features)
-        ddp("    " * level, duan.elements)
+        # ddp("    " * level, duan.features)
+        # ddp("    " * level, duan.elements)
+        if self._duan_zss:
+            ddp("    " * level, "当前中枢", self._duan_zss[-1])
 
         duan.append_element(bi)
         if duan.direction is bi.direction:
@@ -2254,8 +2282,8 @@ class BaseAnalyzer:
                     duan.done = True
                     elements = duan.set_done(mid.start)
                     if self._duan_zss:
-                        self.__pop_duan_zs(duan)
-                        self.__push_duan_zs(duan)
+                        self.__pop_duan_zs(duan, level)
+                        self.__push_duan_zs(duan, level)
                     new = Duan.new(duan.index + 1, elements[0])
                     new.elements = elements
                     new.end = elements[-1].end
@@ -2270,7 +2298,7 @@ class BaseAnalyzer:
                     # Duan.append(duans, new, ZShandler)
                     if duan.end is new.start:
                         duans.append(new)
-                        self.__push_duan_zs(new)
+                        self.__push_duan_zs(new, level)
                     else:
                         raise ChanException("线段不连续", duan.elements[-1].end, new.elements[0].start)
 
@@ -2284,8 +2312,8 @@ class BaseAnalyzer:
                     duan.done = True
                     elements = duan.set_done(mid.start)
                     if self._duan_zss:
-                        self.__pop_duan_zs(duan)
-                        self.__push_duan_zs(duan)
+                        self.__pop_duan_zs(duan, level)
+                        self.__push_duan_zs(duan, level)
                     new = Duan.new(duan.index + 1, elements[0])
                     new.elements = elements
                     new.end = elements[-1].end
@@ -2300,7 +2328,7 @@ class BaseAnalyzer:
                     # Duan.append(duans, new, ZShandler)
                     if duan.end is new.start:
                         duans.append(new)
-                        self.__push_duan_zs(new)
+                        self.__push_duan_zs(new, level)
                     else:
                         raise ChanException("线段不连续", duan.elements[-1].end, new.elements[0].start)
 
@@ -2312,116 +2340,25 @@ class BaseAnalyzer:
 
         # duans[-1].check()
 
-    def __pop_duan_zs(self, duan: Duan):
+    def __push_duan_zs(self, duan: Duan, level: int):
         zss = self._duan_zss
-        if zss:
-            last = zss[-1]
-            if last.elements[-1] is duan:
-                last.elements.pop()
-                if len(last.elements) == 0:
-                    zss.pop()
-                    if zss:
-                        last = zss[-1]
-                        if last.elements[-1] is duan:
-                            ddp("递归弹出")
-                            self.__pop_duan_zs(duan)
-            else:
-                dp("中枢中没有此元素", duan)
-
-    def __push_duan_zs(self, duan: Duan):
-        zss = self._duan_zss
-        new = ZhongShu(duan)
         duans = self._duans
-        if not zss:
-            zss.append(new)
-            return
-        zs = zss[-1]
-        if len(zs.elements) >= 3:
-            relation = double_relation(zs, duan)
-            if relation in (Direction.JumpUp, Direction.JumpDown):
-                if duan.done:
-                    zss.append(new)
-                else:
-                    zs.append_element(duan)
-            else:
-                zs.append_element(duan)
+        ZhongShu.push(duan, zss, duans, level)
 
-        elif len(zs.elements) == 2:
-            if double_relation(zs.elements[0], duan) in (Direction.JumpUp, Direction.JumpDown):
-                # 这里需要判断走势
-                zss.pop()
-                zss.append(new)
-            else:
-                zs.append_element(duan)
+    def __pop_duan_zs(self, duan: Duan, level: int):
+        zss = self._duan_zss
+        ZhongShu.pop(duan, zss, level)
 
-        elif len(zs.elements) == 1:
-            if zs.elements[0].index > 1:
-                relation = double_relation(duans[zs.elements[0].index - 2], zs.elements[0])
-                if (zs.elements[0].direction is Direction.Up and relation is Direction.Up) or (zs.elements[0].direction is Direction.Down and relation is Direction.Down):
-                    zss.pop()
-                    zss.append(new)
-                else:
-                    zs.append_element(duan)
-            else:
-                zs.append_element(duan)
-
-        else:
-            zss.pop()
-            zss.append(new)
-
-    def __push_bi_zs(self, bi: Bi):
+    def __push_bi_zs(self, bi: Bi, level: int):
+        return
         bis = self._bis
         zss = self._bi_zss
-        new = ZhongShu(bi)
-        if not zss:
-            zss.append(new)
-            return
-        zs = zss[-1]
+        ZhongShu.push(bi, zss, bis, level)
 
-        if len(zs.elements) >= 3:
-            relation = double_relation(zs, bi)
-            if relation in (Direction.JumpUp, Direction.JumpDown):
-                zss.append(new)
-
-            else:
-                zs.append_element(bi)
-        elif len(zs.elements) == 2:
-            if double_relation(zs.elements[0], bi) in (Direction.JumpUp, Direction.JumpDown):
-                # 这里需要判断走势
-                zss.pop()
-                zss.append(new)
-            else:
-                zs.append_element(bi)
-
-        elif len(zs.elements) == 1:
-            if zs.elements[0].index > 1:
-                relation = double_relation(bis[zs.elements[0].index - 2], zs.elements[0])
-                if (zs.elements[0].direction is Direction.Up and relation is Direction.Up) or (zs.elements[0].direction is Direction.Down and relation is Direction.Down):
-                    zss.pop()
-                    zss.append(new)
-                else:
-                    zs.append_element(bi)
-            else:
-                zs.append_element(bi)
-
-        else:
-            zss.pop()
-            zss.append(new)
-
-    def __pop_bi_zs(self, obj: Bi):
+    def __pop_bi_zs(self, obj: Bi, level: int):
+        return
         zss = self._bi_zss
-
-        if not zss:
-            return
-        last = zss[-1]
-        last.pop_element(obj)
-        if last.last is None:
-            zss.pop()
-            if zss:
-                last = zss[-1]
-                if obj is last.last:
-                    dp("递归删除中枢元素", obj)
-                    self.__pop_bi_zs(obj)
+        ZhongShu.pop(obj, zss, level)
 
     def process(self):
         self._news.clear()
@@ -2441,10 +2378,10 @@ class BaseAnalyzer:
 
         for bi in self._bis:
             Duan.analyzer(bi, self._duans)
-            ZhongShu.analyzer(bi, self._bi_zss, self._bis)
+            ZhongShu.push(bi, self._bi_zss, self._bis, 0)
 
         for duan in self._duans:
-            ZhongShu.analyzer(duan, self._duan_zss, self._duans)
+            ZhongShu.push(duan, self._duan_zss, self._duans, 0)
 
     def toCharts(self, path: str = "czsc.html", useReal=False):
         import echarts_plot  # czsc
@@ -2642,6 +2579,7 @@ class Bitstamp(CZSCAnalyzer):
                     )
                 except ChanException as e:
                     # continue
+                    self.save_file()
                     raise e
 
             # start = int(data["data"]["ohlc"][0]["timestamp"])
@@ -2689,8 +2627,8 @@ def gen(arr) -> CZSCAnalyzer:
 if __name__ == "__main__":
     bit = main()
     # bit.save_file()
-    # bit = Bitstamp.load_file("btcusd-300-1713692700-1716092400.dat")
-    bit.process()
+    # bit = Bitstamp.load_file("/home/moscow/PycharmProjects/chanlun.py/btcusd-300-1714721100-1715340000.dat")
+    # bit.process()
     # bit = gen([144,152,148,156,153,161,156,167,155])
 
     bit.toCharts("czsc-process.html")
