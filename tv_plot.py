@@ -1701,8 +1701,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
         request.url_for("charting_library", path="/charting_library.standalone.js")
     )
     return HTMLResponse(
-        """
-<!DOCTYPE html>
+        """<!DOCTYPE html>
 <html lang="zh">
 <head>
     <title>TradingView Chart with WebSocket</title>
@@ -1710,6 +1709,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
     <script type="text/javascript" src="$charting_library$"></script>
     <script type="text/javascript">
         const shape_ids = new Array(); // id 映射
+        const debug = false;
         const socket = new WebSocket('ws://localhost:8080/ws');
 
         socket.onopen = () => {
@@ -1819,7 +1819,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 );
                 socket.onmessage = function (event) {
                     const message = JSON.parse(event.data);
-                    console.info(message);
+                    if (debug) console.info(message);
                     if (message.type === "realtime") {
                         const bar = {
                             time: new Date(message.timestamp).getTime(), // Unix timestamp in milliseconds
@@ -1853,11 +1853,11 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 socket.close();
             }
         };
-        
+
 
         function addShapeToChart(obj) {
             if (window.tvWidget) {
-                console.log(obj);
+                if (debug) console.log(obj);
                 const shape_id = window.tvWidget.chart().createMultipointShape(obj.points, obj.options);
                 shape_ids [obj.id] = shape_id;
                 const shape = window.tvWidget.chart().getShapeById(shape_id);
@@ -1871,20 +1871,21 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
             if (window.tvWidget) {
                 const id = shape_ids[shapeId];
                 const shape = window.tvWidget.chart().getShapeById(id);
-                console.log(id, shape);
+                if (debug) console.log(id, shape);
                 window.tvWidget.chart().removeEntity(id);
                 delete shape_ids[shapeId];
-                console.log("del", shapeId, id);
+                if (debug) console.log("del", shapeId, id);
 
             }
         }
+
         function createShape(obj) {
             if (window.tvWidget) {
                 const shape_id = window.tvWidget.chart().createShape(obj.point, obj.options);
                 shape_ids [obj.id] = shape_id;
                 const shape = window.tvWidget.chart().getShapeById(shape_id);
                 shape.bringToFront();
-                
+
             }
         }
 
@@ -1892,11 +1893,11 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
             const id = shape_ids[obj.id];
             const shape = window.tvWidget.chart().getShapeById(id);
             if (shape) {
-                console.log(obj);
+                if (debug) console.log(obj);
                 shape.setPoints(obj.points);
                 //shape.setProperties(obj.options);
                 shape.bringToFront();
-                
+
             } else {
                 console.log("Shape does not exist.");
             }
@@ -1929,9 +1930,9 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 
     </script>
 </head>
-    <body style="margin:0px;">
-        <div id="tv_chart_container"></div>
-    </body>
+<body style="margin:0px;">
+<div id="tv_chart_container"></div>
+</body>
 </html>
 
         """.replace("$charting_library$", charting_library)
