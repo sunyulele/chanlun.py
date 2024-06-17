@@ -315,7 +315,7 @@ class Observer(metaclass=ABCMeta):
     """观察者的基类"""
 
     CAN = False
-    TIME = 0.2
+    TIME = 0.05
     queue = asyncio.Queue()
     loop = asyncio.get_event_loop()
 
@@ -922,27 +922,6 @@ class Bi(BaseChaoObject, Observer):
             Bi.OBJS.append(self)
             self.notify(cmd=Bi.CMD_APPEND)
 
-    @staticmethod
-    def append(bis, bi):
-        if bis and bis[-1].end is not bi.start:
-            raise TypeError("笔连续性错误")
-        i = 0
-        if bis:
-            i = bis[-1].index + 1
-        bi.index = i
-        bis.append(bi)
-        bi.notify(cmd=Bi.CMD_APPEND)
-
-    @staticmethod
-    def pop(bis, fx):
-        if bis:
-            if bis[-1].end is fx:
-                bi = bis.pop()
-                bi.notify(cmd=Bi.CMD_REMOVE)
-                return
-            else:
-                raise ValueError("最后一笔终点错误", fx, bis[-1].end)
-
     def __str__(self):
         return f"Bi({self.direction}, {colored(self.start.dt, 'green')}, {self.start.speck}, {colored(self.end.dt, 'green')}, {self.end.speck}, {self.index}, {self.elements[-1]})"
 
@@ -958,10 +937,19 @@ class Bi(BaseChaoObject, Observer):
         ]
         options = {
             "shape": "trend_line",
-            "linecolor": "#FF0000",
-            "linewidth": 1,
-            "lock": True,
+            # "showInObjectsTree": True,
+            # "disableSave": False,
+            # "disableSelection": True,
+            # "disableUndo": False,
+            # "filled": True,
+            # "lock": False,
+            "text": "bi",
         }
+        properties = {
+            "linecolor": "#CC62FF",
+            "linewidth": 2,
+        }
+
         message = {
             "type": "shape",
             "cmd": cmd,
@@ -969,7 +957,9 @@ class Bi(BaseChaoObject, Observer):
             "id": self.shape_id,
             "points": points,
             "options": options,
+            "properties": properties,
         }
+
         if cmd in (Bi.CMD_APPEND, Bi.CMD_REMOVE, Bi.CMD_MODIFY):
             # 后端实现 增 删 改
             future = asyncio.run_coroutine_threadsafe(
@@ -991,7 +981,6 @@ class Bi(BaseChaoObject, Observer):
     @start.setter
     def start(self, start: FenXing):
         """
-
         :param start:
         :return:
         """
@@ -1146,11 +1135,40 @@ class Bi(BaseChaoObject, Observer):
             bi.notify(cmd=Bi.CMD_APPEND)
 
     @staticmethod
+    def append(bis, bi, _from):
+        if bis and bis[-1].end is not bi.start:
+            raise TypeError("笔连续性错误")
+        i = 0
+        pre = None
+        if bis:
+            i = bis[-1].index + 1
+            pre = bis[-1]
+        bi.index = i
+        bi.pre = pre
+        bis.append(bi)
+        bi.notify(cmd=Bi.CMD_APPEND)
+        if _from == "analyzer":
+            Duan.analyzer_append(bi, Duan.OBJS)
+
+    @staticmethod
+    def pop(bis, fx, _from):
+        if bis:
+            if bis[-1].end is fx:
+                bi = bis.pop()
+                bi.notify(cmd=Bi.CMD_REMOVE)
+                if _from == "analyzer":
+                    Duan.analyzer_pop(bi, Duan.OBJS)
+                return bi
+            else:
+                raise ValueError("最后一笔终点错误", fx, bis[-1].end)
+
+    @staticmethod
     def analyzer(
         fx: FenXing,
         fxs: List[FenXing],
         bis: List["Bi"],
         cklines: List[NewBar],
+        _from: str = "analyzer",
     ):
         last = fxs[-1] if fxs else None
         left, mid, right = fx.left, fx.mid, fx.right
@@ -1183,14 +1201,14 @@ class Bi(BaseChaoObject, Observer):
                         cklines[cklines.index(top) + 1],
                     )
                     assert new.shape is Shape.G, new
-                    Bi.analyzer(new, fxs, bis, cklines)  # 处理新顶
-                    Bi.analyzer(fx, fxs, bis, cklines)  # 再处理当前底
+                    Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新顶
+                    Bi.analyzer(fx, fxs, bis, cklines, _from)  # 再处理当前底
 
                     return
                 flag = bi.relation
                 if flag and fx.mid is bi.real_low:
                     FenXing.append(fxs, fx)
-                    Bi.append(bis, bi)
+                    Bi.append(bis, bi, _from)
 
                 else:
                     ...
@@ -1212,7 +1230,8 @@ class Bi(BaseChaoObject, Observer):
                         print(_bi)
                         tmp = fxs.pop()
                         assert tmp is last
-                        bi = Bi.pop(bis, tmp)
+                        bi = Bi.pop(bis, tmp, _from)
+                        Bi.analyzer(_bi.start, fxs, bis, cklines, _from)
 
             else:
                 ...
@@ -1220,7 +1239,7 @@ class Bi(BaseChaoObject, Observer):
                 if right.high > last.speck:
                     tmp = fxs.pop()
                     assert tmp is last
-                    bi = Bi.pop(bis, tmp)
+                    bi = Bi.pop(bis, tmp, _from)
 
         elif last.shape is Shape.D and fx.shape is Shape.G:
             bi = Bi(
@@ -1240,14 +1259,13 @@ class Bi(BaseChaoObject, Observer):
                         cklines[cklines.index(bottom) + 1],
                     )
                     assert new.shape is Shape.D, new
-                    Bi.analyzer(new, fxs, bis, cklines)  # 处理新底
-                    Bi.analyzer(fx, fxs, bis, cklines)  # 再处理当前顶
-
+                    Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新底
+                    Bi.analyzer(fx, fxs, bis, cklines, _from)  # 再处理当前顶
                     return
                 flag = bi.relation
                 if flag and fx.mid is bi.real_high:
                     FenXing.append(fxs, fx)
-                    Bi.append(bis, bi)
+                    Bi.append(bis, bi, _from)
 
                 else:
                     ...
@@ -1269,7 +1287,8 @@ class Bi(BaseChaoObject, Observer):
                         print(_bi)
                         tmp = fxs.pop()
                         assert tmp is last
-                        bi = Bi.pop(bis, tmp)
+                        bi = Bi.pop(bis, tmp, _from)
+                        Bi.analyzer(_bi.start, fxs, bis, cklines, _from)
 
             else:
                 ...
@@ -1277,12 +1296,12 @@ class Bi(BaseChaoObject, Observer):
                 if right.low < last.speck:
                     tmp = fxs.pop()
                     assert tmp is last
-                    bi = Bi.pop(bis, tmp)
+                    bi = Bi.pop(bis, tmp, _from)
 
         elif last.shape is Shape.G and fx.shape is Shape.S:
             if last.speck < right.high:
                 tmp = fxs.pop()
-                bi = Bi.pop(bis, tmp)
+                bi = Bi.pop(bis, tmp, _from)
 
                 if fxs:
                     # 查找
@@ -1295,7 +1314,7 @@ class Bi(BaseChaoObject, Observer):
                     assert bottom.shape is Shape.D
                     if last.speck > bottom.low:
                         tmp = fxs.pop()
-                        bi = Bi.pop(bis, tmp)
+                        bi = Bi.pop(bis, tmp, _from)
 
                         new = FenXing(
                             cklines[cklines.index(bottom) - 1],
@@ -1303,13 +1322,13 @@ class Bi(BaseChaoObject, Observer):
                             cklines[cklines.index(bottom) + 1],
                         )
                         assert new.shape is Shape.D, new
-                        Bi.analyzer(new, fxs, bis, cklines)  # 处理新底
+                        Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新底
                         # print("GS修正")
 
         elif last.shape is Shape.D and fx.shape is Shape.X:
             if last.speck > right.low:
                 tmp = fxs.pop()
-                bi = Bi.pop(bis, tmp)
+                bi = Bi.pop(bis, tmp, _from)
 
                 if fxs:
                     # 查找
@@ -1322,7 +1341,7 @@ class Bi(BaseChaoObject, Observer):
                     assert top.shape is Shape.G
                     if last.speck < top.high:
                         tmp = fxs.pop()
-                        bi = Bi.pop(bis, tmp)
+                        bi = Bi.pop(bis, tmp, _from)
 
                         new = FenXing(
                             cklines[cklines.index(top) - 1],
@@ -1330,13 +1349,13 @@ class Bi(BaseChaoObject, Observer):
                             cklines[cklines.index(top) + 1],
                         )
                         assert new.shape is Shape.G, new
-                        Bi.analyzer(new, fxs, bis, cklines)  # 处理新顶
+                        Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新顶
                         # print("DX修正")
 
         elif last.shape is Shape.G and fx.shape is Shape.G:
             if last.speck < fx.speck:
                 tmp = fxs.pop()
-                bi = Bi.pop(bis, tmp)
+                bi = Bi.pop(bis, tmp, _from)
 
                 if fxs:
                     # 查找
@@ -1349,7 +1368,7 @@ class Bi(BaseChaoObject, Observer):
                     assert bottom.shape is Shape.D
                     if last.speck > bottom.low:
                         tmp = fxs.pop()
-                        bi = Bi.pop(bis, tmp)
+                        bi = Bi.pop(bis, tmp, _from)
 
                         new = FenXing(
                             cklines[cklines.index(bottom) - 1],
@@ -1357,8 +1376,8 @@ class Bi(BaseChaoObject, Observer):
                             cklines[cklines.index(bottom) + 1],
                         )
                         assert new.shape is Shape.D, new
-                        Bi.analyzer(new, fxs, bis, cklines)  # 处理新底
-                        Bi.analyzer(fx, fxs, bis, cklines)  # 再处理当前顶
+                        Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新底
+                        Bi.analyzer(fx, fxs, bis, cklines, _from)  # 再处理当前顶
                         # print("GG修正")
                         return
 
@@ -1373,12 +1392,12 @@ class Bi(BaseChaoObject, Observer):
                     flag=False,
                 )
                 FenXing.append(fxs, fx)
-                Bi.append(bis, bi)
+                Bi.append(bis, bi, _from)
 
         elif last.shape is Shape.D and fx.shape is Shape.D:
             if last.speck > fx.speck:
                 tmp = fxs.pop()
-                bi = Bi.pop(bis, tmp)
+                bi = Bi.pop(bis, tmp, _from)
 
                 if fxs:
                     # 查找
@@ -1391,7 +1410,7 @@ class Bi(BaseChaoObject, Observer):
                     assert top.shape is Shape.G
                     if last.speck < top.high:
                         tmp = fxs.pop()
-                        bi = Bi.pop(bis, tmp)
+                        bi = Bi.pop(bis, tmp, _from)
 
                         new = FenXing(
                             cklines[cklines.index(top) - 1],
@@ -1399,8 +1418,8 @@ class Bi(BaseChaoObject, Observer):
                             cklines[cklines.index(top) + 1],
                         )
                         assert new.shape is Shape.G, new
-                        Bi.analyzer(new, fxs, bis, cklines)  # 处理新顶
-                        Bi.analyzer(fx, fxs, bis, cklines)  # 再处理当前底
+                        Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新顶
+                        Bi.analyzer(fx, fxs, bis, cklines, _from)  # 再处理当前底
                         # print("DD修正")
                         return
 
@@ -1415,7 +1434,7 @@ class Bi(BaseChaoObject, Observer):
                     flag=False,
                 )
                 FenXing.append(fxs, fx)
-                Bi.append(bis, bi)
+                Bi.append(bis, bi, _from)
 
         elif last.shape is Shape.G and fx.shape is Shape.X:
             ...
@@ -1438,7 +1457,7 @@ class Bi(BaseChaoObject, Observer):
         for i in range(1, size - 2):
             left, mid, right = cklines[i - 1], cklines[i], cklines[i + 1]
             fx = FenXing(left, mid, right)
-            Bi.analyzer(fx, fxs, bis, cklines)
+            Bi.analyzer(fx, fxs, bis, cklines, "tmp")
             if bis:
                 return fx, bis[0]
         if bis:
@@ -1447,12 +1466,545 @@ class Bi(BaseChaoObject, Observer):
         return None, None
 
 
-class Duan(BaseChaoObject):
+class FeatureSequence:
+    def __init__(self, elements: set, direction: Direction):
+        self.__elements: set = elements
+        self.direction: Direction = direction  # 线段方向
+        self.shape: Optional[Shape] = None
+        self.index = 0
+
+    def __str__(self):
+        if not self.__elements:
+            return f"空特征序列({self.direction})"
+        return f"特征序列({self.direction}, {self.start.dt}, {self.end.dt}, {len(self.__elements)})"
+
+    def __repr__(self):
+        if not self.__elements:
+            return f"空特征序列({self.direction})"
+        return f"特征序列({self.direction}, {self.start.dt}, {self.end.dt}, {len(self.__elements)})"
+
+    def __len__(self):
+        return len(self.__elements)
+
+    def __iter__(self):
+        return iter(self.__elements)
+
+    def add(self, obj: Union[Bi, "Duan"]):
+        direction = Direction.Down if self.direction is Direction.Up else Direction.Up
+        if obj.direction is not direction:
+            raise ChanException("方向不匹配", direction, obj, self)
+        self.__elements.add(obj)
+
+    def remove(self, obj: Union[Bi, "Duan"]):
+        direction = Direction.Down if self.direction is Direction.Up else Direction.Up
+        if obj.direction is not direction:
+            raise ChanException("方向不匹配", direction, obj, self)
+        self.__elements.remove(obj)
+
+    @property
+    def start(self) -> FenXing:
+        if not self.__elements:
+            raise ChanException("数据异常", self)
+        func = min
+        if self.direction is Direction.Up:  # 线段方向向上特征序列取高高
+            func = max
+        if self.direction is Direction.Down:
+            func = min
+        fx = func([obj.start for obj in self.__elements], key=lambda fx: fx.speck)
+        assert fx.shape in (Shape.G, Shape.D)
+        return fx
+
+    @property
+    def end(self) -> FenXing:
+        if not self.__elements:
+            raise ChanException("数据异常", self)
+        func = min
+        if self.direction is Direction.Up:  # 线段方向向上特征序列取高高
+            func = max
+        if self.direction is Direction.Down:
+            func = min
+        fx = func([obj.end for obj in self.__elements], key=lambda fx: fx.speck)
+        assert fx.shape in (Shape.G, Shape.D)
+        return fx
+
+    @property
+    def high(self) -> float:
+        return max([self.end, self.start], key=lambda fx: fx.speck).speck
+
+    @property
+    def low(self) -> float:
+        return min([self.end, self.start], key=lambda fx: fx.speck).speck
+
+    @staticmethod
+    def analysis(bis: list, direction: Direction):
+        result: List[FeatureSequence] = []
+        for obj in bis:
+            if obj.direction is direction:
+                continue
+            if result:
+                last = result[-1]
+
+                if double_relation(last, obj) in (Direction.Left,):
+                    last.add(obj)
+                else:
+                    result.append(
+                        FeatureSequence(
+                            {obj},
+                            Direction.Up
+                            if obj.direction is Direction.Down
+                            else Direction.Down,
+                        )
+                    )
+                    # dp("FS.ANALYSIS", double_relation(last, obj))
+            else:
+                result.append(
+                    FeatureSequence(
+                        {obj},
+                        Direction.Up
+                        if obj.direction is Direction.Down
+                        else Direction.Down,
+                    )
+                )
+        return result
+
+
+class Duan(BaseChaoObject, Observer):
     OBJS: List["Duan"] = []
+    FAKE = None
+    CMD_APPEND = "append"
+    CMD_MODIFY = "modify"
+    CMD_REMOVE = "remove"
 
     # __slots__ =
-    def __init__(self):
+    def __init__(
+        self,
+        pre: Optional["Duan"],
+        start: FenXing,
+        end: Union[FenXing, NewBar],
+        elements: List[Bi],
+    ) -> None:
         super().__init__()
+        self.features: list[Optional[FeatureSequence]] = [None, None, None]
+        if start.shape is Shape.G:
+            self.direction = Direction.Down
+            self.high = start.speck
+            self.low = end.low
+        elif start.shape is Shape.D:
+            self.direction = Direction.Up
+            self.high = end.high
+            self.low = start.speck
+        else:
+            raise ChanException(start.shape, end.shape)
+        for i in range(1, len(self.elements)):
+            assert self.elements[i - 1].index + 1 == self.elements[i].index, (
+                self.elements[i - 1].index,
+                self.elements[i].index,
+            )
+        if pre is not None:
+            assert pre.end is start, (pre.end, start)
+            self.index = pre.index + 1
+        self.pre = pre
+        self.__start = start
+        self.__end = end
+        self.elements = elements
+
+        self.attach(self)
+        # self.notify(cmd=Duan.CMD_APPEND)
+
+    def update(self, observable: "Observable", **kwords: Any):
+        # 实现 自我观察
+        cmd = kwords.get("cmd")
+        points = [
+            {"time": int(self.start.dt.timestamp()), "price": self.start.speck},
+            {
+                "time": int(self.end.dt.timestamp()),
+                "price": self.end.speck,
+            },
+        ]
+        options = {
+            "shape": "trend_line",
+            # "showInObjectsTree": True,
+            # "disableSave": False,
+            # "disableSelection": True,
+            # "disableUndo": False,
+            # "filled": True,
+            # "lock": False,
+            "text": "bi",
+        }
+        properties = {
+            "linecolor": "#F1C40F",
+            "linewidth": 3,
+        }
+
+        message = {
+            "type": "shape",
+            "cmd": cmd,
+            "name": "trend_line",
+            "id": self.shape_id,
+            "points": points,
+            "options": options,
+            "properties": properties,
+        }
+        if cmd in (Duan.CMD_APPEND, Duan.CMD_REMOVE, Duan.CMD_MODIFY):
+            # 后端实现 增 删 改
+            future = asyncio.run_coroutine_threadsafe(
+                Observer.queue.put(message), Observer.loop
+            )
+            try:
+                future.result()  # 确保任务已添加到队列
+            except Exception as e:
+                print(f"Error adding task to queue: {e}")
+
+    def __str__(self):
+        return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None}, {self.start}, {self.end})"
+
+    def __repr__(self):
+        return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None}, {self.start}, {self.end})"
+
+    @property
+    def lmr(self) -> tuple[bool, bool, bool]:
+        return self.left is not None, self.mid is not None, self.right is not None
+
+    @property
+    def state(self) -> States:
+        if self.pre is not None:
+            return "老阳" if self.direction is Direction.Down else "老阴"
+        else:
+            return "少阳" if self.direction is Direction.Up else "少阴"
+
+    @property
+    def left(self) -> "FeatureSequence":
+        return self.features[0]
+
+    @property
+    def mid(self) -> "FeatureSequence":
+        return self.features[1]
+
+    @property
+    def right(self) -> "FeatureSequence":
+        return self.features[2]
+
+    @property
+    def start(self) -> FenXing:
+        return self.__start
+
+    @start.setter
+    def start(self, start: FenXing):
+        """
+        :param start:
+        :return:
+        """
+        self.__start = start
+
+    @property
+    def end(self) -> FenXing:
+        return self.__end
+
+    @end.setter
+    def end(self, end: Union[FenXing, NewBar]):
+        old = self.__end
+        self.__end = end
+        self.notify(cmd=Duan.CMD_MODIFY)
+
+    def get_elements(self) -> Iterable[Bi]:
+        elements = []
+        for obj in self.elements:
+            elements.append(obj)
+            if obj.end is self.end:
+                break
+        return elements
+
+    def append_element(self, bi: Bi):
+        if self.elements[-1].end is bi.start:
+            if bi.direction is not self.direction:
+                if len(self.elements) >= 3:
+                    if self.direction is Direction.Down:
+                        if self.elements[-3].low < bi.high:
+                            dp("向下线段被笔破坏", bi)
+                    if self.direction is Direction.Up:
+                        if self.elements[-3].high > bi.low:
+                            dp("向上线段被笔破坏", bi)
+            self.elements.append(bi)
+            self.notify(cmd=Duan.CMD_MODIFY)
+        else:
+            dp("线段添加元素时，元素不连续", self.elements[-1], bi)
+            raise ChanException("线段添加元素时，元素不连续", self.elements[-1], bi)
+
+    def pop_element(self, bi: Bi) -> bool:
+        if self.elements[-1] is bi:
+            self.elements.pop()
+            self.notify(cmd=Duan.CMD_MODIFY)
+            return True
+        else:
+            raise ChanException("线段弹出元素时，元素不匹配")
+
+    def set_done(self, fx: FenXing):
+        elements = []
+        for obj in self.elements:
+            if elements:
+                elements.append(obj)
+            if obj.start is fx:
+                elements.append(obj)
+        self.end = fx
+        self.done = True
+        self.notify(cmd=Duan.CMD_MODIFY)
+        return elements
+
+    @staticmethod
+    def append(xds, duan, _from=None):
+        if xds and xds[-1].end is not duan.start:
+            raise TypeError("线段连续性错误")
+        i = 0
+        pre = None
+        if xds:
+            i = xds[-1].index + 1
+            pre = xds[-1]
+        duan.index = i
+        duan.pre = pre
+        xds.append(duan)
+        duan.notify(cmd=Bi.CMD_APPEND)
+
+    @staticmethod
+    def pop(xds, duan, _from=None):
+        if xds:
+            if xds[-1] is duan:
+                duan = xds.pop()
+                duan.notify(cmd=Bi.CMD_REMOVE)
+                return duan
+            else:
+                raise ValueError
+
+    @staticmethod
+    def analyzer_pop(bi, xds: List["Duan"], level=0):
+        ddp()
+        cmd = "Duans.POP"
+        duan: Duan = xds[-1]
+        state: States = duan.state
+        last: Optional[Duan] = duan.pre
+        last = xds[-2] if len(xds) > 1 else last
+        left: Optional[FeatureSequence] = duan.features[0]
+        mid: Optional[FeatureSequence] = duan.features[1]
+        right: Optional[FeatureSequence] = duan.features[2]
+        lmr: Tuple[bool, bool, bool] = duan.lmr
+
+        ddp("    " * level, cmd, state, lmr, duan, bi)
+        # ddp("    " * level, duan.features)
+        # ddp("    " * level, duan.elements)
+
+        duan.pop_element(bi)
+
+        if last is not None:
+            if (last.right and bi in last.right) or (
+                last.right is None and bi in last.left
+            ):
+                Duan.pop(xds, duan)
+                # self.__pop_duan_zs(duan, level)
+                last.pop_element(bi)
+                last.features = [last.left, last.mid, None]
+                return
+
+        if lmr == (False, False, False):
+            if len(duan.elements) >= 1:
+                raise ChanException("线段中有多个元素，但特征序列为空")
+            Duan.pop(xds, duan)
+            # self.__pop_duan_zs(duan, level)
+
+            if last is not None:
+                last.pop_element(bi)
+
+        elif lmr == (True, False, False):
+            if duan.direction is bi.direction:
+                return
+
+            left.remove(bi)
+            if not left:
+                duan.features = [None, None, None]
+
+        elif lmr == (True, True, False):
+            if duan.direction is bi.direction:
+                return
+            features = FeatureSequence.analysis(duan.elements, duan.direction)
+            mid.remove(bi)
+            if not mid:
+                duan.features = [left, None, None]
+            else:
+                duan.features = [left, mid, None]
+            if len(features) >= 2:
+                if left in features:
+                    ddp("    " * level, cmd, state, "第二特征序列 修正", features)
+                    duan.features = [features[-2], features[-1], None]
+
+        elif lmr == (True, True, True):
+            if duan.direction is bi.direction:
+                return
+            right.remove(bi)
+            if right:
+                raise ChanException("右侧特征序列不为空")
+            duan.features = [left, mid, None]
+
+        else:
+            raise ChanException("未知的状态", state, lmr)
+
+    @staticmethod
+    def analyzer_append(bi: Bi, xds: list["Duan"], level: int = 0):
+        cmd = "Duans.PUSH"
+        new = Duan(None, bi.start, bi.end, [bi])
+        if not xds:
+            # xds.append(new)
+            Duan.append(xds, new)
+            return
+        duan: Duan = xds[-1]
+        state: States = duan.state
+        last: Optional[Duan] = duan.pre
+        # last = duans[-2] if len(duans) > 1 else last
+        left: Optional[FeatureSequence] = duan.features[0]
+        mid: Optional[FeatureSequence] = duan.features[1]
+        # right: Optional[FeatureSequence] = duan.features[2]
+        lmr: Tuple[bool, bool, bool] = duan.lmr
+
+        ddp("    " * level, cmd, state, lmr, duan, bi)
+        ddp("    " * level, duan.features)
+        ddp("    " * level, duan.elements)
+
+        duan.append_element(bi)
+        if duan.direction is bi.direction:
+            ddp("    " * level, "方向相同, 更新结束点", duan.end, duan.state)
+            if duan.mid:
+                if duan.direction is Direction.Up:
+                    if duan.mid.high < bi.high:
+                        duan.end = bi.end
+                        return
+                if duan.direction is Direction.Down:
+                    if duan.mid.low > bi.low:
+                        duan.end = bi.end
+                        return
+                duan.end = duan.mid.start
+            else:
+                duan.end = bi.end
+
+            return
+
+        feature = FeatureSequence(
+            {bi}, Direction.Up if bi.direction is Direction.Down else Direction.Down
+        )
+        if lmr == (False, False, False):
+            assert feature.direction is duan.direction
+            duan.features = [feature, None, None]
+
+        elif lmr == (True, False, False):
+            assert left.direction is duan.direction
+            relation = double_relation(left, bi)
+            ddp("    " * level, "第二特征序列", relation, duan.state)
+            if relation is Direction.Left:
+                left.add(bi)
+            elif relation is Direction.Right:
+                if last is not None:
+                    left.add(bi)
+                else:
+                    duan.features = [left, feature, None]
+
+            elif relation in (Direction.Up, Direction.JumpUp):
+                if duan.direction is Direction.Up:
+                    duan.features = [left, feature, None]
+                else:
+                    # Down
+                    duan.features = [left, feature, None]
+
+            elif relation in (Direction.Down, Direction.JumpDown):
+                if duan.direction is Direction.Down:
+                    duan.features = [left, feature, None]
+                else:
+                    # Up
+                    duan.features = [left, feature, None]
+
+            else:
+                raise ChanException("未知的关系", relation)
+
+        elif lmr == (True, True, False):
+            assert mid.direction is duan.direction
+            relation = double_relation(mid, bi)
+            ddp("    " * level, "第三特征序列", relation, duan.state)
+            if relation is Direction.Left:
+                mid.add(bi)
+
+            elif relation is Direction.Right:
+                if last is not None:
+                    mid.add(bi)
+                else:
+                    duan.features = [mid, feature, None]
+
+            elif relation in (Direction.Up, Direction.JumpUp):
+                if duan.direction is Direction.Up:
+                    duan.features = [mid, feature, None]
+                else:
+                    # Down, 底分型
+                    duan.features = [left, mid, feature]
+                    duan.end = mid.start
+                    duan.done = True
+                    elements = duan.set_done(mid.start)
+
+                    new = Duan(duan, elements[0].start, elements[-1].end, elements)
+                    if double_relation(left, mid) is Direction.JumpDown:
+                        duan.pre = new
+                    ddp(
+                        "    " * level,
+                        "底分型终结",
+                        duan.pre is not None,
+                        elements[0].direction,
+                    )
+                    features = FeatureSequence.analysis(elements, new.direction)
+                    if features:
+                        new.features = [features[-1], None, None]
+                        if len(features) > 1:
+                            new.features = [features[-2], features[-1], None]
+                    if duan.end is new.start:
+                        Duan.append(xds, new)
+
+                    else:
+                        raise ChanException(
+                            "线段不连续", duan.elements[-1].end, new.elements[0].start
+                        )
+
+            elif relation in (Direction.Down, Direction.JumpDown):
+                if duan.direction is Direction.Down:
+                    duan.features = [mid, feature, None]
+                else:
+                    # Up, 顶分型
+                    duan.features = [left, mid, feature]
+                    duan.end = mid.start
+                    duan.done = True
+                    elements = duan.set_done(mid.start)
+
+                    # new = Duan.new(duan.index + 1, elements[0])
+                    new = Duan(duan, elements[0].start, elements[-1].end, elements)
+                    if double_relation(left, mid) is Direction.JumpUp:
+                        duan.pre = new
+                    ddp(
+                        "    " * level,
+                        "顶分型终结",
+                        duan.pre is not None,
+                        elements[0].direction,
+                    )
+                    features = FeatureSequence.analysis(elements, new.direction)
+                    if features:
+                        new.features = [features[-1], None, None]
+                        if len(features) > 1:
+                            new.features = [features[-2], features[-1], None]
+
+                    if duan.end is new.start:
+                        Duan.append(xds, new)
+                    else:
+                        raise ChanException(
+                            "线段不连续", duan.elements[-1].end, new.elements[0].start
+                        )
+
+            else:
+                raise ChanException("未知的关系", relation)
+
+        else:
+            raise ChanException("未知的状态", state, lmr)
+
+        # duans[-1].check()
 
 
 class BaseAnalyzer:
@@ -1613,7 +2165,7 @@ class CZSCAnalyzer:
     def load_bytes(cls, symbol: str, bytes_data: bytes, freq: int) -> "Self":
         size = struct.calcsize(">6d")
         obj = cls(symbol, freq)
-        bytes_data = bytes_data[size * 1250 :]
+        bytes_data = bytes_data[-size * 1500 :]
         while bytes_data:
             t = bytes_data[:size]
             k = RawBar.from_bytes(t)
@@ -1862,6 +2414,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 shape_ids [obj.id] = shape_id;
                 const shape = window.tvWidget.chart().getShapeById(shape_id);
                 shape.bringToFront();
+                shape.setProperties(obj.properties);
                 //console.log(obj.id, shape_id);
 
             }
@@ -1885,7 +2438,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 shape_ids [obj.id] = shape_id;
                 const shape = window.tvWidget.chart().getShapeById(shape_id);
                 shape.bringToFront();
-
+                //shape.setProperties(obj.options);
             }
         }
 
@@ -1894,8 +2447,9 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
             const shape = window.tvWidget.chart().getShapeById(id);
             if (shape) {
                 if (debug) console.log(obj);
+                console.log(shape.getProperties());
                 shape.setPoints(obj.points);
-                //shape.setProperties(obj.options);
+                shape.setProperties(obj.properties);
                 shape.bringToFront();
 
             } else {
@@ -1959,6 +2513,7 @@ async def handle_message(message: dict):
                     "id": message["id"],
                     "cmd": message["cmd"],
                     "options": message["options"],
+                    "properties": message["properties"],
                 }
             )
         )
@@ -2001,5 +2556,6 @@ class ConnectionManager:
 
 # RawBar.PATCHS[ts2int("2024-04-17 21:20:00")] = Pillar(62356, 62100)
 manager = ConnectionManager()
+Observer.TIME = 0.5
 if __name__ == "__main__":
     bit = main_load_file("btcusd-300-1713295800-1715695500.dat")
