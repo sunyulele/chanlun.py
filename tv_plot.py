@@ -1146,8 +1146,8 @@ class Bi(BaseChaoObject, Observer):
         bi.index = i
         bi.pre = pre
         bis.append(bi)
-        bi.notify(cmd=Bi.CMD_APPEND)
         if _from == "analyzer":
+            bi.notify(cmd=Bi.CMD_APPEND)
             Duan.analyzer_append(bi, Duan.OBJS)
 
     @staticmethod
@@ -1155,8 +1155,8 @@ class Bi(BaseChaoObject, Observer):
         if bis:
             if bis[-1].end is fx:
                 bi = bis.pop()
-                bi.notify(cmd=Bi.CMD_REMOVE)
                 if _from == "analyzer":
+                    bi.notify(cmd=Bi.CMD_REMOVE)
                     Duan.analyzer_pop(bi, Duan.OBJS)
                 return bi
             else:
@@ -1466,12 +1466,80 @@ class Bi(BaseChaoObject, Observer):
         return None, None
 
 
-class FeatureSequence:
+class FeatureSequence(Observable, Observer):
+    CAN = True
+
     def __init__(self, elements: set, direction: Direction):
+        super().__init__()
+        self.__shape_id = TVShapeID()
         self.__elements: set = elements
         self.direction: Direction = direction  # 线段方向
         self.shape: Optional[Shape] = None
         self.index = 0
+        self.attach(self)
+        self.__appended = False
+        self.__removed = False
+
+    @property
+    def shape_id(self) -> str:
+        return self.__shape_id.shape_id
+
+    def copy(self, other: "FeatureSequence") -> "FeatureSequence":
+        self.__elements = other.__elements
+        self.direction = other.direction
+        self.shape = other.shape
+        self.index = other.index
+        self.notify(cmd=Bi.CMD_MODIFY)
+        return self
+
+    def update(self, observable: "Observable", **kwords: Any):
+        # 实现 自我观察
+        if not FeatureSequence.CAN:
+            return
+        cmd = kwords.get("cmd")
+        points = [
+            {"time": 0, "price": 0},
+            {"time": 0, "price": 0},
+        ]
+        if cmd != Bi.CMD_REMOVE:
+            points = [
+                {"time": int(self.start.dt.timestamp()), "price": self.start.speck},
+                {"time": int(self.end.dt.timestamp()), "price": self.end.speck},
+            ]
+        options = {
+            "shape": "trend_line",
+            # "showInObjectsTree": True,
+            # "disableSave": False,
+            # "disableSelection": True,
+            # "disableUndo": False,
+            # "filled": True,
+            # "lock": False,
+            "text": "feature",
+        }
+        properties = {
+            "linecolor": "#22FF22" if self.direction is Direction.Down else "#ff2222",
+            "linewidth": 2,
+        }
+
+        message = {
+            "type": "shape",
+            "cmd": cmd,
+            "name": "trend_line",
+            "id": self.shape_id,
+            "points": points,
+            "options": options,
+            "properties": properties,
+        }
+
+        if cmd in (Bi.CMD_APPEND, Bi.CMD_REMOVE, Bi.CMD_MODIFY):
+            # 后端实现 增 删 改
+            future = asyncio.run_coroutine_threadsafe(
+                Observer.queue.put(message), Observer.loop
+            )
+            try:
+                future.result()  # 确保任务已添加到队列
+            except Exception as e:
+                print(f"Error adding task to queue: {e}")
 
     def __str__(self):
         if not self.__elements:
@@ -1494,12 +1562,21 @@ class FeatureSequence:
         if obj.direction is not direction:
             raise ChanException("方向不匹配", direction, obj, self)
         self.__elements.add(obj)
+        self.notify(cmd=Bi.CMD_MODIFY)
 
     def remove(self, obj: Union[Bi, "Duan"]):
         direction = Direction.Down if self.direction is Direction.Up else Direction.Up
         if obj.direction is not direction:
             raise ChanException("方向不匹配", direction, obj, self)
-        self.__elements.remove(obj)
+        try:
+            self.__elements.remove(obj)
+        except Exception as e:
+            print(self)
+            raise e
+        if self.__elements:
+            self.notify(cmd=Bi.CMD_MODIFY)
+        else:
+            self.notify(cmd=Bi.CMD_REMOVE)
 
     @property
     def start(self) -> FenXing:
@@ -1584,7 +1661,7 @@ class Duan(BaseChaoObject, Observer):
         elements: List[Bi],
     ) -> None:
         super().__init__()
-        self.features: list[Optional[FeatureSequence]] = [None, None, None]
+        self._features: list[Optional[FeatureSequence]] = [None, None, None]
         if start.shape is Shape.G:
             self.direction = Direction.Down
             self.high = start.speck
@@ -1607,6 +1684,7 @@ class Duan(BaseChaoObject, Observer):
         self.__start = start
         self.__end = end
         self.elements = elements
+        self.jump: bool = False  # 特征序列是否有缺口
 
         self.attach(self)
         # self.notify(cmd=Duan.CMD_APPEND)
@@ -1647,9 +1725,14 @@ class Duan(BaseChaoObject, Observer):
         }
         if cmd in (Duan.CMD_APPEND, Duan.CMD_REMOVE, Duan.CMD_MODIFY):
             # 后端实现 增 删 改
+            if cmd == Duan.CMD_REMOVE:
+                self.left = None
+                self.right = None
+                self.mid = None
             future = asyncio.run_coroutine_threadsafe(
                 Observer.queue.put(message), Observer.loop
             )
+
             try:
                 future.result()  # 确保任务已添加到队列
             except Exception as e:
@@ -1666,23 +1749,58 @@ class Duan(BaseChaoObject, Observer):
         return self.left is not None, self.mid is not None, self.right is not None
 
     @property
-    def state(self) -> States:
+    def state(self) -> Optional[States]:
         if self.pre is not None:
-            return "老阳" if self.direction is Direction.Down else "老阴"
+            if self.pre.mid is None:
+                return None
+            print(self.pre)
+            relation = double_relation(self.pre.left, self.pre.mid)
+            print(relation)
+            if relation is Direction.JumpUp and self.direction is Direction.Up:
+                return "老阳"
+            elif relation is Direction.JumpDown and self.direction is Direction.Down:
+                return "老阴"
+            else:
+                return "少阳" if self.direction is Direction.Up else "少阴"
         else:
             return "少阳" if self.direction is Direction.Up else "少阴"
 
+    def __feature_setter(self, offset: int, feature: Optional[FeatureSequence]):
+        if feature is None:
+            if self._features[offset]:
+                self._features[offset].notify(cmd=Duan.CMD_REMOVE)
+            self._features[offset] = feature
+            return
+        if self._features[offset] is None:
+            feature.notify(cmd=Duan.CMD_APPEND)
+            self._features[offset] = feature
+        else:
+            self._features[offset].copy(feature)
+            self._features[offset].notify(cmd=Duan.CMD_MODIFY)
+
     @property
     def left(self) -> "FeatureSequence":
-        return self.features[0]
+        return self._features[0]
+
+    @left.setter
+    def left(self, feature: FeatureSequence):
+        self.__feature_setter(0, feature)
 
     @property
     def mid(self) -> "FeatureSequence":
-        return self.features[1]
+        return self._features[1]
+
+    @mid.setter
+    def mid(self, feature: FeatureSequence):
+        self.__feature_setter(1, feature)
 
     @property
     def right(self) -> "FeatureSequence":
-        return self.features[2]
+        return self._features[2]
+
+    @right.setter
+    def right(self, feature: FeatureSequence):
+        self.__feature_setter(2, feature)
 
     @property
     def start(self) -> FenXing:
@@ -1690,10 +1808,6 @@ class Duan(BaseChaoObject, Observer):
 
     @start.setter
     def start(self, start: FenXing):
-        """
-        :param start:
-        :return:
-        """
         self.__start = start
 
     @property
@@ -1704,6 +1818,12 @@ class Duan(BaseChaoObject, Observer):
     def end(self, end: Union[FenXing, NewBar]):
         old = self.__end
         self.__end = end
+        if self.direction is Direction.Up:
+            self.high = end.speck
+        elif self.direction is Direction.Down:
+            self.low = end.speck
+        else:
+            raise
         self.notify(cmd=Duan.CMD_MODIFY)
 
     def get_elements(self) -> Iterable[Bi]:
@@ -1738,15 +1858,52 @@ class Duan(BaseChaoObject, Observer):
         else:
             raise ChanException("线段弹出元素时，元素不匹配")
 
+    def get_features(
+        self,
+    ) -> Tuple[
+        Optional[FeatureSequence], Optional[FeatureSequence], Optional[FeatureSequence]
+    ]:
+        features = FeatureSequence.analysis(self.elements, self.direction)
+        if len(features) == 0:
+            return None, None, None
+        if len(features) == 1:
+            return features[0], None, None
+        if len(features) == 2:
+            return features[0], features[1], None
+        if len(features) >= 3:
+            if self.direction is Direction.Up:
+                if double_relation(features[-2], features[-1]) in (
+                    Direction.Down,
+                    Direction.JumpDown,
+                ):
+                    return features[-3], features[-2], features[-1]
+                else:
+                    return features[-2], features[-1], None
+            else:
+                if double_relation(features[-2], features[-1]) in (
+                    Direction.Up,
+                    Direction.JumpUp,
+                ):
+                    return features[-3], features[-2], features[-1]
+                else:
+                    return features[-2], features[-1], None
+
     def set_done(self, fx: FenXing):
+        self.left, self.mid, self.right = self.get_features()
+        assert fx is self.mid.start
+
         elements = []
         for obj in self.elements:
             if elements:
                 elements.append(obj)
             if obj.start is fx:
                 elements.append(obj)
-        self.end = fx
         self.done = True
+        self.end = fx
+        self.jump = double_relation(self.left, self.mid) in (
+            Direction.JumpUp,
+            Direction.JumpDown,
+        )
         self.notify(cmd=Duan.CMD_MODIFY)
         return elements
 
@@ -1779,12 +1936,12 @@ class Duan(BaseChaoObject, Observer):
         ddp()
         cmd = "Duans.POP"
         duan: Duan = xds[-1]
-        state: States = duan.state
+        state: Optional[States] = duan.state
         last: Optional[Duan] = duan.pre
         last = xds[-2] if len(xds) > 1 else last
-        left: Optional[FeatureSequence] = duan.features[0]
-        mid: Optional[FeatureSequence] = duan.features[1]
-        right: Optional[FeatureSequence] = duan.features[2]
+        left: Optional[FeatureSequence] = duan.left
+        mid: Optional[FeatureSequence] = duan.mid
+        right: Optional[FeatureSequence] = duan.right
         lmr: Tuple[bool, bool, bool] = duan.lmr
 
         ddp("    " * level, cmd, state, lmr, duan, bi)
@@ -1800,9 +1957,15 @@ class Duan(BaseChaoObject, Observer):
                 Duan.pop(xds, duan)
                 # self.__pop_duan_zs(duan, level)
                 last.pop_element(bi)
-                last.features = [last.left, last.mid, None]
+                # last.features = [last.left, last.mid, None]
+                last.right = None
                 return
 
+        if duan.elements:
+            duan.left, duan.mid, duan.right = duan.get_features()
+        else:
+            Duan.pop(xds, duan)
+        return
         if lmr == (False, False, False):
             if len(duan.elements) >= 1:
                 raise ChanException("线段中有多个元素，但特征序列为空")
@@ -1818,7 +1981,8 @@ class Duan(BaseChaoObject, Observer):
 
             left.remove(bi)
             if not left:
-                duan.features = [None, None, None]
+                # duan.features = [None, None, None]
+                duan.left = None
 
         elif lmr == (True, True, False):
             if duan.direction is bi.direction:
@@ -1826,13 +1990,17 @@ class Duan(BaseChaoObject, Observer):
             features = FeatureSequence.analysis(duan.elements, duan.direction)
             mid.remove(bi)
             if not mid:
-                duan.features = [left, None, None]
+                # duan.features = [left, None, None]
+                duan.mid = None
             else:
-                duan.features = [left, mid, None]
+                ...
+                # duan.features = [left, mid, None]
             if len(features) >= 2:
                 if left in features:
                     ddp("    " * level, cmd, state, "第二特征序列 修正", features)
-                    duan.features = [features[-2], features[-1], None]
+                    # duan.features = [features[-2], features[-1], None]
+                    duan.left = features[-2]
+                    duan.mid = features[-1]
 
         elif lmr == (True, True, True):
             if duan.direction is bi.direction:
@@ -1857,17 +2025,17 @@ class Duan(BaseChaoObject, Observer):
         state: States = duan.state
         last: Optional[Duan] = duan.pre
         # last = duans[-2] if len(duans) > 1 else last
-        left: Optional[FeatureSequence] = duan.features[0]
-        mid: Optional[FeatureSequence] = duan.features[1]
+        left: Optional[FeatureSequence] = duan.left
+        mid: Optional[FeatureSequence] = duan.mid
         # right: Optional[FeatureSequence] = duan.features[2]
         lmr: Tuple[bool, bool, bool] = duan.lmr
 
         ddp("    " * level, cmd, state, lmr, duan, bi)
-        ddp("    " * level, duan.features)
+        ddp("    " * level, duan._features)
         ddp("    " * level, duan.elements)
 
-        duan.append_element(bi)
         if duan.direction is bi.direction:
+            duan.append_element(bi)
             ddp("    " * level, "方向相同, 更新结束点", duan.end, duan.state)
             if duan.mid:
                 if duan.direction is Direction.Up:
@@ -1884,61 +2052,111 @@ class Duan(BaseChaoObject, Observer):
 
             return
 
+        if len(xds) == 1:
+            if (
+                (duan.direction is Direction.Up)
+                and (bi.low < duan.start.speck)
+                and len(duan.elements) == 1
+            ):
+                new = new = Duan(None, bi.start, bi.end, [bi])
+                Duan.pop(xds, duan)
+                Duan.append(xds, new, None)
+                return
+            if (
+                (duan.direction is Direction.Down)
+                and (bi.high > duan.start.speck)
+                and len(duan.elements) == 1
+            ):
+                new = new = Duan(None, bi.start, bi.end, [bi])
+                Duan.pop(xds, duan)
+                Duan.append(xds, new, None)
+                return
+
+        duan.append_element(bi)
+        l, m, r = duan.get_features()
+        if r:
+            elements = duan.set_done(m.start)
+            new = Duan(duan, elements[0].start, elements[-1].end, elements)
+            Duan.append(xds, new)
+            new.left, new.mid, new.right = new.get_features()
+            if duan.direction is Direction.Up:
+                fx = "顶分型"
+            else:
+                fx = "底分型"
+
+            ddp("    " * level, f"{fx}终结, 缺口: {duan.jump}")
+
+        return
         feature = FeatureSequence(
             {bi}, Direction.Up if bi.direction is Direction.Down else Direction.Down
         )
         if lmr == (False, False, False):
             assert feature.direction is duan.direction
-            duan.features = [feature, None, None]
+
+            duan.append_element(bi)
+            # duan.features = [feature, None, None]
+            duan.left = feature
 
         elif lmr == (True, False, False):
             assert left.direction is duan.direction
+            duan.append_element(bi)
             relation = double_relation(left, bi)
             ddp("    " * level, "第二特征序列", relation, duan.state)
             if relation is Direction.Left:
                 left.add(bi)
             elif relation is Direction.Right:
-                if last is not None:
+                if last is not None and last.state in ("老阳", "老阴"):
                     left.add(bi)
                 else:
-                    duan.features = [left, feature, None]
+                    # duan.features = [left, feature, None]
+                    duan.mid = feature
 
             elif relation in (Direction.Up, Direction.JumpUp):
                 if duan.direction is Direction.Up:
-                    duan.features = [left, feature, None]
+                    # duan.features = [left, feature, None]
+                    duan.mid = feature
                 else:
                     # Down
-                    duan.features = [left, feature, None]
+                    # duan.features = [left, feature, None]
+                    duan.mid = feature
 
             elif relation in (Direction.Down, Direction.JumpDown):
                 if duan.direction is Direction.Down:
-                    duan.features = [left, feature, None]
+                    # duan.features = [left, feature, None]
+                    duan.mid = feature
                 else:
                     # Up
-                    duan.features = [left, feature, None]
+                    # duan.features = [left, feature, None]
+                    duan.mid = feature
 
             else:
                 raise ChanException("未知的关系", relation)
 
         elif lmr == (True, True, False):
             assert mid.direction is duan.direction
+            duan.append_element(bi)
             relation = double_relation(mid, bi)
             ddp("    " * level, "第三特征序列", relation, duan.state)
             if relation is Direction.Left:
                 mid.add(bi)
 
             elif relation is Direction.Right:
-                if last is not None:
+                if last is not None and last.state in ("老阳", "老阴"):
                     mid.add(bi)
                 else:
-                    duan.features = [mid, feature, None]
+                    # duan.features = [mid, feature, None]
+                    duan.left = mid
+                    duan.mid = feature
 
             elif relation in (Direction.Up, Direction.JumpUp):
                 if duan.direction is Direction.Up:
-                    duan.features = [mid, feature, None]
+                    duan.left = mid
+                    duan.mid = feature
+                    # duan.features = [mid, feature, None]
                 else:
                     # Down, 底分型
-                    duan.features = [left, mid, feature]
+                    duan.right = feature
+                    # duan.features = [left, mid, feature]
                     duan.end = mid.start
                     duan.done = True
                     elements = duan.set_done(mid.start)
@@ -1954,9 +2172,12 @@ class Duan(BaseChaoObject, Observer):
                     )
                     features = FeatureSequence.analysis(elements, new.direction)
                     if features:
-                        new.features = [features[-1], None, None]
+                        new.left = features[-1]
+                        # new.features = [features[-1], None, None]
                         if len(features) > 1:
-                            new.features = [features[-2], features[-1], None]
+                            new.left = features[-2]
+                            new.mid = features[-1]
+                            # new.features = [features[-2], features[-1], None]
                     if duan.end is new.start:
                         Duan.append(xds, new)
 
@@ -1967,10 +2188,13 @@ class Duan(BaseChaoObject, Observer):
 
             elif relation in (Direction.Down, Direction.JumpDown):
                 if duan.direction is Direction.Down:
-                    duan.features = [mid, feature, None]
+                    duan.left = mid
+                    duan.mid = feature
+                    # duan.features = [mid, feature, None]
                 else:
                     # Up, 顶分型
-                    duan.features = [left, mid, feature]
+                    duan.right = feature
+                    # duan.features = [left, mid, feature]
                     duan.end = mid.start
                     duan.done = True
                     elements = duan.set_done(mid.start)
@@ -1987,9 +2211,12 @@ class Duan(BaseChaoObject, Observer):
                     )
                     features = FeatureSequence.analysis(elements, new.direction)
                     if features:
-                        new.features = [features[-1], None, None]
+                        new.left = features[-1]
+                        # new.features = [features[-1], None, None]
                         if len(features) > 1:
-                            new.features = [features[-2], features[-1], None]
+                            new.left = features[-2]
+                            new.mid = features[-1]
+                            # new.features = [features[-2], features[-1], None]
 
                     if duan.end is new.start:
                         Duan.append(xds, new)
@@ -2165,7 +2392,7 @@ class CZSCAnalyzer:
     def load_bytes(cls, symbol: str, bytes_data: bytes, freq: int) -> "Self":
         size = struct.calcsize(">6d")
         obj = cls(symbol, freq)
-        bytes_data = bytes_data[-size * 1500 :]
+        bytes_data = bytes_data[size * 1800 :]
         while bytes_data:
             t = bytes_data[:size]
             k = RawBar.from_bytes(t)
@@ -2556,6 +2783,6 @@ class ConnectionManager:
 
 # RawBar.PATCHS[ts2int("2024-04-17 21:20:00")] = Pillar(62356, 62100)
 manager = ConnectionManager()
-Observer.TIME = 0.5
+Observer.TIME = 0.03
 if __name__ == "__main__":
     bit = main_load_file("btcusd-300-1713295800-1715695500.dat")
