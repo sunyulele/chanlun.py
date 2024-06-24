@@ -2207,7 +2207,7 @@ class ZhongShu(BaseChaoObject, Observer):
     @third.setter
     def third(self, third):
         self.__third = third
-        if third is not None:
+        if third is not None and Observer.CAN:
             points = [
                 {"time": int(third.end.dt.timestamp()), "price": third.end.speck},
             ]
@@ -2328,6 +2328,30 @@ class ZhongShu(BaseChaoObject, Observer):
             self.elements.append(obj)
         else:
             raise ChanException("中枢无法添加元素", relation, self.last_element, obj)
+
+    def charts(self):
+        return [
+            [
+                self.start.mid.dt,
+                self.start.mid.dt,
+                self.elements[-1].start.mid.dt,
+                self.elements[-1].start.mid.dt,
+                self.start.mid.dt,
+            ]
+            if len(self.elements) > 3
+            else [
+                self.start.mid.dt,
+                self.start.mid.dt,
+                self.end.mid.dt,
+                self.end.mid.dt,
+                self.start.mid.dt,
+            ],
+            [self.zg, self.zd, self.zd, self.zg, self.zg],
+            "#993333"
+            if self.direction is Direction.Up
+            else "#99CC99",  # 上下上 为 红色，反之为 绿色
+            self.level,
+        ]
 
     @classmethod
     def _bi_analyzer(cls):
@@ -2563,6 +2587,85 @@ class BaseAnalyzer:
             Bi.analyzer(fx, FenXing.OBJS, Bi.OBJS, NewBar.OBJS)
         Bi.calc_fake()
 
+    def toCharts(self, path: str = "czsc.html", useReal=False):
+        import echarts_plot  # czsc
+
+        reload(echarts_plot)
+        kline_pro = echarts_plot.kline_pro
+        fx = [
+            {"dt": fx.dt, "fx": fx.low if fx.shape is Shape.D else fx.high}
+            for fx in self._fxs
+        ]
+        bi = [
+            {"dt": fx.dt, "bi": fx.low if fx.shape is Shape.D else fx.high}
+            for fx in self._fxs
+        ]
+
+        # xd = [{"dt": fx.dt, "xd": fx.low if fx.shape is Shape.D else fx.high} for fx in self.xd_fxs]
+
+        xd = []
+        mergers = []
+        for duan in self._duans:
+            xd.extend(
+                [
+                    {"xd": duan.start.speck, "dt": duan.start.dt},
+                    {"xd": duan.end.speck, "dt": duan.end.dt},
+                ]
+            )
+            left, mid, right = duan._features
+            if left:
+                if len(left) > 1:
+                    mergers.append(left)
+            if mid:
+                if len(mid) > 1:
+                    mergers.append(mid)
+            if right:
+                if len(right) > 1:
+                    mergers.append(right)
+            else:
+                print("right is None")
+
+        dzs = [zs.charts() for zs in ZhongShu.DUAN_OBJS if len(zs.elements) >= 3]
+        bzs = [zs.charts() for zs in ZhongShu.BI_OBJS if len(zs.elements) >= 3]
+
+        charts = kline_pro(
+            [
+                {
+                    "dt": x.dt,
+                    "open": x.open,
+                    "high": x.high,
+                    "low": x.low,
+                    "close": x.close,
+                    "vol": x.volume,
+                }
+                for x in self._raws
+            ]
+            if useReal
+            else [
+                {
+                    "dt": x.dt,
+                    "open": x.open,
+                    "high": x.high,
+                    "low": x.low,
+                    "close": x.close,
+                    "vol": x.volume,
+                }
+                for x in self._news
+            ],
+            fx=fx,
+            bi=bi,
+            xd=xd,
+            mergers=mergers,
+            bzs=bzs,
+            dzs=dzs,
+            title=self.symbol + "-" + str(self.freq / 60) + "分钟",
+            width="100%",
+            height="80%",
+        )
+
+        charts.render(path)
+        return charts
+
 
 class CZSCAnalyzer:
     def __init__(self, symbol: str, freq: int, freqs: List[int] = None):
@@ -2578,6 +2681,9 @@ class CZSCAnalyzer:
         self._analyzeies = dict()
         self.__analyzer = BaseAnalyzer(symbol, freq)
         self.raws = RawBar.OBJS
+
+    def toCharts(self, path: str = "czsc.html", useReal=False):
+        return self.__analyzer.toCharts(path=path, useReal=useReal)
 
     @property
     def news(self):
@@ -2635,7 +2741,7 @@ class CZSCAnalyzer:
     def load_bytes(cls, symbol: str, bytes_data: bytes, freq: int) -> "Self":
         size = struct.calcsize(">6d")
         obj = cls(symbol, freq)
-        bytes_data = bytes_data# [: size * 300]
+        bytes_data = bytes_data  # [: size * 300]
         while bytes_data:
             t = bytes_data[:size]
             k = RawBar.from_bytes(t)
@@ -2670,6 +2776,7 @@ class CZSCAnalyzer:
 
 def main_load_file(path: str = "btcusd-300-1713295800-1715695500.dat"):
     obj = CZSCAnalyzer.load_file(path)
+    obj.toCharts()
     return obj
 
 
@@ -2714,6 +2821,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 thread.start()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+@app.get("/czsc")
+def static_czsc():
+    with open("czsc.html", "r") as f:
+        return HTMLResponse(f.read())
 
 
 @app.get("/{nol}/{exchange}/{symbol}", response_class=HTMLResponse)
@@ -3003,6 +3116,8 @@ async def handle_message(message: dict):
     if message["type"] == "realtime":
         await manager.send_message(json.dumps(message))
     elif message["type"] == "shape":
+        options = message["options"]
+        # options["disableUndo"]= True
         await manager.send_message(
             json.dumps(
                 {
@@ -3011,7 +3126,7 @@ async def handle_message(message: dict):
                     "points": message["points"],
                     "id": message["id"],
                     "cmd": message["cmd"],
-                    "options": message["options"],
+                    "options": options,
                     "properties": message["properties"],
                 }
             )
@@ -3055,6 +3170,6 @@ class ConnectionManager:
 
 # RawBar.PATCHES[ts2int("2024-04-17 21:20:00")] = Pillar(62356, 62100)
 manager = ConnectionManager()
-Observer.TIME = 0.03
+Observer.TIME = 0.05
 if __name__ == "__main__":
     bit = main_load_file("btcusd-300-1713295800-1715695500.dat")
