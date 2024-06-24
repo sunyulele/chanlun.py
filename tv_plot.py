@@ -1713,6 +1713,7 @@ class Duan(BaseChaoObject, Observer):
             "linecolor": "#F1C40F",
             "linewidth": 3,
             "title": f"Duan-{self.index}",
+            "text": "duan",
         }
 
         message = {
@@ -2176,7 +2177,7 @@ class ZhongShu(BaseChaoObject, Observer):
                 "ranges": True,
             },
             "title": f"{self._type}中枢-{self.index}",
-            "text": "",
+            "text": f"{self._type}zs",
         }
 
         message = {
@@ -2741,7 +2742,7 @@ class CZSCAnalyzer:
     def load_bytes(cls, symbol: str, bytes_data: bytes, freq: int) -> "Self":
         size = struct.calcsize(">6d")
         obj = cls(symbol, freq)
-        bytes_data = bytes_data  # [: size * 300]
+        bytes_data = bytes_data[: size * 300]
         while bytes_data:
             t = bytes_data[:size]
             k = RawBar.from_bytes(t)
@@ -3068,6 +3069,93 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 disabled_features: ["use_localstorage_for_settings", "header_symbol_search"],
             }));
             widget.headerReady().then(function () {
+                function createHeaderButton(text, title, clickHandler, options) {
+                    var button = widget.createButton(options);
+                    button.setAttribute('title', title);
+                    button.textContent = text;
+                    button.addEventListener('click', clickHandler);
+                }
+
+                createHeaderButton('笔', '显示隐藏笔', function () {
+                    widget.activeChart().getAllShapes().forEach(({name, id}) => {
+                        console.log(name);
+                        if (name === "trend_line") {
+                            var shape = widget.activeChart().getShapeById(id);
+                            console.log(id, shape.getProperties());
+                            shape = window.tvWidget.chart().getShapeById(id);
+
+                            var properties = shape.getProperties();
+                            if (properties.text === "bi")
+                                if (properties.visible === true) {
+                                    shape.setProperties({"visible": false})
+                                } else {
+                                    shape.setProperties({"visible": true})
+                                }
+
+
+                        }
+                    });
+                });
+                createHeaderButton('段', '显示隐藏段', function () {
+                    widget.activeChart().getAllShapes().forEach(({name, id}) => {
+                        console.log(name);
+                        if (name === "trend_line") {
+                            var shape = widget.activeChart().getShapeById(id);
+                            console.log(id, shape.getProperties());
+                            shape = window.tvWidget.chart().getShapeById(id);
+
+                            var properties = shape.getProperties();
+                            if (properties.text === "duan")
+                                if (properties.visible === true) {
+                                    shape.setProperties({"visible": false})
+                                } else {
+                                    shape.setProperties({"visible": true})
+                                }
+
+
+                        }
+                    });
+                });
+                createHeaderButton('笔中枢', '显示隐藏笔中枢', function () {
+                    widget.activeChart().getAllShapes().forEach(({name, id}) => {
+                        console.log(name);
+                        if (name === "rectangle") {
+                            var shape = widget.activeChart().getShapeById(id);
+                            console.log(id, shape.getProperties());
+                            shape = window.tvWidget.chart().getShapeById(id);
+
+                            var properties = shape.getProperties();
+                            if (properties.text === "Bizs")
+                                if (properties.visible === true) {
+                                    shape.setProperties({"visible": false})
+                                } else {
+                                    shape.setProperties({"visible": true})
+                                }
+
+
+                        }
+                    });
+                });
+                createHeaderButton('段中枢', '显示隐藏段中枢', function () {
+                    widget.activeChart().getAllShapes().forEach(({name, id}) => {
+                        console.log(name);
+                        if (name === "rectangle") {
+                            var shape = widget.activeChart().getShapeById(id);
+                            console.log(id, shape.getProperties());
+                            shape = window.tvWidget.chart().getShapeById(id);
+
+                            var properties = shape.getProperties();
+                            if (properties.text === "Duanzs")
+                                if (properties.visible === true) {
+                                    shape.setProperties({"visible": false})
+                                } else {
+                                    shape.setProperties({"visible": true})
+                                }
+
+
+                        }
+                    });
+                });
                 widget.onChartReady(function () {
                     widget.subscribe("drawing_event", function (sourceId, drawingEventType) {
                         if (drawingEventType.indexOf("click") === 0) {
@@ -3087,7 +3175,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     })
 
                 });
-            
+
             });
         }
 
@@ -3101,7 +3189,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 </body>
 </html>
 
-    """.replace("$charting_library$", charting_library)
+""".replace("$charting_library$", charting_library)
     )
 
 
@@ -3118,6 +3206,8 @@ async def handle_message(message: dict):
     elif message["type"] == "shape":
         options = message["options"]
         # options["disableUndo"]= True
+        properties = message["properties"]
+        properties["frozen"] = True
         await manager.send_message(
             json.dumps(
                 {
