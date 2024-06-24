@@ -40,13 +40,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-try:
-    from termcolor import colored
-except ImportError:
-
-    def colored(text, color="red", on_color=None, attrs=None):
-        """彩色字"""
-        return text
+from termcolor import colored
 
 
 ts2int = lambda timestamp_str: int(
@@ -321,16 +315,28 @@ class Observer(metaclass=ABCMeta):
 
     @abstractmethod
     def update(self, observable: "Observable", **kwords: Any):
-        pass
+        cmd = kwords.get("cmd")
+        if cmd == "remove":
+            assert self._removed is False
+            self._removed = True
+            del observable
+
+        if cmd == "append":
+            assert self._appended is False
+            self._appended = True
+        if cmd == "modify":
+            assert self._appended is True, self
 
 
 class Observable(object):
     """被观察者的基类"""
 
-    __slots__ = ("__observers",)
+    __slots__ = ("__observers", "_removed", "_appended")
 
     def __init__(self):
         self.__observers = []
+        self._removed = False
+        self._appended = False
 
     # 添加观察者
     def attach(self, observer: Observer):
@@ -347,51 +353,6 @@ class Observable(object):
                 o.update(self, **kwords)
 
 
-class ObservableList(Observable):
-    def __init__(self, arr: List):
-        super().__init__()
-        self._list = list(arr)
-
-    def __getitem__(self, index):
-        return self._list[index]
-
-    def __len__(self):
-        return len(self._list)
-
-    def __setitem__(self, index, value):
-        old_value = self._list[index]
-        self._list[index] = value
-        self.notify(name="setitem", objs=self._list, index=index, value=value)
-
-    def __delitem__(self, index):
-        raise ChanException
-        value = self._list.pop(index)
-        self.notify(name="delitem", objs=self._list, index=index, value=value)
-
-    def append(self, value):
-        self._list.append(value)
-        self.notify(name="append", objs=self._list, value=value)
-
-    def extend(self, values):
-        raise ChanException
-        self._list.extend(values)
-        self.notify(name="extend", objs=self._list, value=values)
-
-    def insert(self, index, value):
-        self._list.insert(index, value)
-        self.notify(name="insert", objs=self._list, index=index, value=value)
-
-    def pop(self, index=-1):
-        value = self._list.pop(index)
-        self.notify(name="pop", objs=self._list, index=index, value=value)
-        return value
-
-    def remove(self, value):
-        raise ChanException
-        self._list.remove(value)
-        self.notify(name="remove", objs=self._list, value=value)
-
-
 class TVShapeID(object):
     """
     charting_library shape ID 管理
@@ -404,9 +365,13 @@ class TVShapeID(object):
         super().__init__()
         s = TVShapeID.get(6)
         while s in TVShapeID.IDS:
-            s = TVShapeID.get(6)
+            s = TVShapeID.get(8)
         TVShapeID.IDS.add(s)
         self.__shape_id: str = s
+
+    def __del__(self):
+        TVShapeID.IDS.remove(self.__shape_id)
+        del self.__shape_id
 
     @property
     def shape_id(self) -> str:
@@ -431,10 +396,12 @@ class TVShapeID(object):
 class BaseChaoObject(Observable):
     """ """
 
-    __slots__ = "cache", "elements", "done", "index", "pre", "__shape_id", "__pillar"
+    __slots__ = "cache", "elements", "__done", "index", "pre", "__shape_id", "__pillar"
     FAST = 12
     SLOW = 26
     SIGNAL = 9
+
+    CMD_DONE = "done"
 
     def __init__(self, index=0):
         super().__init__()
@@ -442,7 +409,7 @@ class BaseChaoObject(Observable):
         self.__pillar = Pillar(0.0, 0.0)
         self.cache = dict()
         self.elements = []
-        self.done = False
+        self.__done = False
         self.index = index
         self.pre: Optional[Union["RawBar", "NewBar", "Bi", "Duan"]] = None
 
@@ -461,6 +428,15 @@ class BaseChaoObject(Observable):
     @low.setter
     def low(self, value: float):
         self.__pillar.low = value
+
+    @property
+    def done(self) -> bool:
+        return self.__done
+
+    @done.setter
+    def done(self, value: bool):
+        self.__done = value
+        self.notify(cmd=BaseChaoObject.CMD_DONE, obj=self)
 
     @property
     def macd(self) -> float:
@@ -486,7 +462,7 @@ class RawBar(BaseChaoObject, Observer):
     """
 
     OBJS: List["RawBar"] = []
-    PATCHS: Dict[int, Pillar] = dict()
+    PATCHES: Dict[int, Pillar] = dict()
 
     CMD_APPEND = "append"
 
@@ -514,7 +490,7 @@ class RawBar(BaseChaoObject, Observer):
         self.low = l
         self.close = c
         self.volume = v
-        if pillar := RawBar.PATCHS.get(int(dt.timestamp())):
+        if pillar := RawBar.PATCHES.get(int(dt.timestamp())):
             self.high = pillar.high
             self.low = pillar.low
 
@@ -621,7 +597,16 @@ class NewBar(BaseChaoObject, Observer):
 
     OBJS: List["NewBar"] = []
 
-    __slots__ = "__shape", "relation", "jump", "speck", "dt", "direction"
+    __slots__ = (
+        "__shape",
+        "relation",
+        "jump",
+        "speck",
+        "dt",
+        "direction",
+        "_bi_noo",
+        "_duan_noo",
+    )
 
     def __init__(
         self,
@@ -660,6 +645,8 @@ class NewBar(BaseChaoObject, Observer):
         NewBar.OBJS.append(self)
         self.attach(self)
         self.notify(cmd=NewBar.CMD_APPEND)
+        self._bi_noo = 0  # 笔操作次数
+        self._duan_noo = 0  # 线段操作次数
 
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
@@ -871,7 +858,7 @@ class Bi(BaseChaoObject, Observer):
 
     BI_LENGTH = 5  # 成BI最低长度
     BI_JUMP = True  # 跳空是否是一个NewBar
-    BI_FENGXING = False  # True: 一笔起始分型高低包含整个笔对象则不成笔, False: 只判断分型中间数据是否包含
+    BI_FENGXING = False  # True: 一笔起始分型高低包含整支笔对象则不成笔, False: 只判断分型中间数据是否包含
     CMD_APPEND = "append"
     CMD_MODIFY = "modify"
     CMD_REMOVE = "remove"
@@ -930,6 +917,7 @@ class Bi(BaseChaoObject, Observer):
 
     def update(self, observable: "Observable", **kwords: Any):
         # 实现 自我观察
+        # return
         cmd = kwords.get("cmd")
         points = [
             {"time": int(self.start.dt.timestamp()), "price": self.start.speck},
@@ -948,6 +936,7 @@ class Bi(BaseChaoObject, Observer):
         properties = {
             "linecolor": "#CC62FF",
             "linewidth": 2,
+            "title": f"Bi-{self.index}",
         }
 
         message = {
@@ -969,6 +958,7 @@ class Bi(BaseChaoObject, Observer):
                 future.result()  # 确保任务已添加到队列
             except Exception as e:
                 print(f"Error adding task to queue: {e}")
+        super().update(observable, **kwords)
 
     @property
     def length(self) -> int:
@@ -1116,7 +1106,6 @@ class Bi(BaseChaoObject, Observer):
 
     @classmethod
     def calc_fake(cls):
-        ...
         last = cls.FAKE
         if last is not None:
             last.notify(cmd=Bi.CMD_REMOVE)
@@ -1145,9 +1134,12 @@ class Bi(BaseChaoObject, Observer):
             pre = bis[-1]
         bi.index = i
         bi.pre = pre
+        bi.done = True
         bis.append(bi)
         if _from == "analyzer":
             bi.notify(cmd=Bi.CMD_APPEND)
+            ZhongShu._bi_analyzer()
+            # ZhongShu.analyzer_push(bi, ZhongShu.BI_OBJS, Bi.OBJS, 0)
             Duan.analyzer_append(bi, Duan.OBJS)
 
     @staticmethod
@@ -1155,9 +1147,13 @@ class Bi(BaseChaoObject, Observer):
         if bis:
             if bis[-1].end is fx:
                 bi = bis.pop()
+                bi.done = False
                 if _from == "analyzer":
                     bi.notify(cmd=Bi.CMD_REMOVE)
+                    ZhongShu._bi_analyzer()
+                    # ZhongShu.analyzer_pop(bi, ZhongShu.BI_OBJS, 0, _from)
                     Duan.analyzer_pop(bi, Duan.OBJS)
+                    NewBar.OBJS[-1]._bi_noo += 1
                 return bi
             else:
                 raise ValueError("最后一笔终点错误", fx, bis[-1].end)
@@ -1239,7 +1235,7 @@ class Bi(BaseChaoObject, Observer):
                 if right.high > last.speck:
                     tmp = fxs.pop()
                     assert tmp is last
-                    bi = Bi.pop(bis, tmp, _from)
+                    Bi.pop(bis, tmp, _from)
 
         elif last.shape is Shape.D and fx.shape is Shape.G:
             bi = Bi(
@@ -1287,7 +1283,7 @@ class Bi(BaseChaoObject, Observer):
                         print(_bi)
                         tmp = fxs.pop()
                         assert tmp is last
-                        bi = Bi.pop(bis, tmp, _from)
+                        Bi.pop(bis, tmp, _from)
                         Bi.analyzer(_bi.start, fxs, bis, cklines, _from)
 
             else:
@@ -1296,12 +1292,12 @@ class Bi(BaseChaoObject, Observer):
                 if right.low < last.speck:
                     tmp = fxs.pop()
                     assert tmp is last
-                    bi = Bi.pop(bis, tmp, _from)
+                    Bi.pop(bis, tmp, _from)
 
         elif last.shape is Shape.G and fx.shape is Shape.S:
             if last.speck < right.high:
                 tmp = fxs.pop()
-                bi = Bi.pop(bis, tmp, _from)
+                Bi.pop(bis, tmp, _from)
 
                 if fxs:
                     # 查找
@@ -1314,7 +1310,7 @@ class Bi(BaseChaoObject, Observer):
                     assert bottom.shape is Shape.D
                     if last.speck > bottom.low:
                         tmp = fxs.pop()
-                        bi = Bi.pop(bis, tmp, _from)
+                        Bi.pop(bis, tmp, _from)
 
                         new = FenXing(
                             cklines[cklines.index(bottom) - 1],
@@ -1328,7 +1324,7 @@ class Bi(BaseChaoObject, Observer):
         elif last.shape is Shape.D and fx.shape is Shape.X:
             if last.speck > right.low:
                 tmp = fxs.pop()
-                bi = Bi.pop(bis, tmp, _from)
+                Bi.pop(bis, tmp, _from)
 
                 if fxs:
                     # 查找
@@ -1341,7 +1337,7 @@ class Bi(BaseChaoObject, Observer):
                     assert top.shape is Shape.G
                     if last.speck < top.high:
                         tmp = fxs.pop()
-                        bi = Bi.pop(bis, tmp, _from)
+                        Bi.pop(bis, tmp, _from)
 
                         new = FenXing(
                             cklines[cklines.index(top) - 1],
@@ -1355,7 +1351,7 @@ class Bi(BaseChaoObject, Observer):
         elif last.shape is Shape.G and fx.shape is Shape.G:
             if last.speck < fx.speck:
                 tmp = fxs.pop()
-                bi = Bi.pop(bis, tmp, _from)
+                Bi.pop(bis, tmp, _from)
 
                 if fxs:
                     # 查找
@@ -1368,7 +1364,7 @@ class Bi(BaseChaoObject, Observer):
                     assert bottom.shape is Shape.D
                     if last.speck > bottom.low:
                         tmp = fxs.pop()
-                        bi = Bi.pop(bis, tmp, _from)
+                        Bi.pop(bis, tmp, _from)
 
                         new = FenXing(
                             cklines[cklines.index(bottom) - 1],
@@ -1397,7 +1393,7 @@ class Bi(BaseChaoObject, Observer):
         elif last.shape is Shape.D and fx.shape is Shape.D:
             if last.speck > fx.speck:
                 tmp = fxs.pop()
-                bi = Bi.pop(bis, tmp, _from)
+                Bi.pop(bis, tmp, _from)
 
                 if fxs:
                     # 查找
@@ -1410,7 +1406,7 @@ class Bi(BaseChaoObject, Observer):
                     assert top.shape is Shape.G
                     if last.speck < top.high:
                         tmp = fxs.pop()
-                        bi = Bi.pop(bis, tmp, _from)
+                        Bi.pop(bis, tmp, _from)
 
                         new = FenXing(
                             cklines[cklines.index(top) - 1],
@@ -1438,10 +1434,8 @@ class Bi(BaseChaoObject, Observer):
 
         elif last.shape is Shape.G and fx.shape is Shape.X:
             ...
-
         elif last.shape is Shape.D and fx.shape is Shape.S:
             ...
-
         else:
             raise ValueError(last.shape, fx.shape)
 
@@ -1462,7 +1456,6 @@ class Bi(BaseChaoObject, Observer):
                 return fx, bis[0]
         if bis:
             return fx, bis[0]
-
         return None, None
 
 
@@ -1494,6 +1487,7 @@ class FeatureSequence(Observable, Observer):
 
     def update(self, observable: "Observable", **kwords: Any):
         # 实现 自我观察
+
         if not FeatureSequence.CAN:
             return
         cmd = kwords.get("cmd")
@@ -1519,6 +1513,9 @@ class FeatureSequence(Observable, Observer):
         properties = {
             "linecolor": "#22FF22" if self.direction is Direction.Down else "#ff2222",
             "linewidth": 2,
+            "linestyle": 2,
+            # "showLabel": True,
+            "title": "特征序列",
         }
 
         message = {
@@ -1540,6 +1537,7 @@ class FeatureSequence(Observable, Observer):
                 future.result()  # 确保任务已添加到队列
             except Exception as e:
                 print(f"Error adding task to queue: {e}")
+        super().update(observable, **kwords)
 
     def __str__(self):
         if not self.__elements:
@@ -1557,14 +1555,15 @@ class FeatureSequence(Observable, Observer):
     def __iter__(self):
         return iter(self.__elements)
 
-    def add(self, obj: Union[Bi, "Duan"]):
+    def add(self, obj: Union[Bi, "Duan"], _from):
         direction = Direction.Down if self.direction is Direction.Up else Direction.Up
         if obj.direction is not direction:
             raise ChanException("方向不匹配", direction, obj, self)
         self.__elements.add(obj)
-        self.notify(cmd=Bi.CMD_MODIFY)
+        if _from == "analyzer":
+            self.notify(cmd=Bi.CMD_MODIFY)
 
-    def remove(self, obj: Union[Bi, "Duan"]):
+    def remove(self, obj: Union[Bi, "Duan"], _from):
         direction = Direction.Down if self.direction is Direction.Up else Direction.Up
         if obj.direction is not direction:
             raise ChanException("方向不匹配", direction, obj, self)
@@ -1574,9 +1573,11 @@ class FeatureSequence(Observable, Observer):
             print(self)
             raise e
         if self.__elements:
-            self.notify(cmd=Bi.CMD_MODIFY)
+            if _from == "analyzer":
+                self.notify(cmd=Bi.CMD_MODIFY)
         else:
-            self.notify(cmd=Bi.CMD_REMOVE)
+            if _from == "analyzer":
+                self.notify(cmd=Bi.CMD_REMOVE)
 
     @property
     def start(self) -> FenXing:
@@ -1587,7 +1588,7 @@ class FeatureSequence(Observable, Observer):
             func = max
         if self.direction is Direction.Down:
             func = min
-        fx = func([obj.start for obj in self.__elements], key=lambda fx: fx.speck)
+        fx = func([obj.start for obj in self.__elements], key=lambda o: o.speck)
         assert fx.shape in (Shape.G, Shape.D)
         return fx
 
@@ -1600,7 +1601,7 @@ class FeatureSequence(Observable, Observer):
             func = max
         if self.direction is Direction.Down:
             func = min
-        fx = func([obj.end for obj in self.__elements], key=lambda fx: fx.speck)
+        fx = func([obj.end for obj in self.__elements], key=lambda o: o.speck)
         assert fx.shape in (Shape.G, Shape.D)
         return fx
 
@@ -1613,7 +1614,7 @@ class FeatureSequence(Observable, Observer):
         return min([self.end, self.start], key=lambda fx: fx.speck).speck
 
     @staticmethod
-    def analysis(bis: list, direction: Direction):
+    def analysis(bis: list, direction: Direction, _from):
         result: List[FeatureSequence] = []
         for obj in bis:
             if obj.direction is direction:
@@ -1622,7 +1623,7 @@ class FeatureSequence(Observable, Observer):
                 last = result[-1]
 
                 if double_relation(last, obj) in (Direction.Left,):
-                    last.add(obj)
+                    last.add(obj, _from)
                 else:
                     result.append(
                         FeatureSequence(
@@ -1687,7 +1688,6 @@ class Duan(BaseChaoObject, Observer):
         self.jump: bool = False  # 特征序列是否有缺口
 
         self.attach(self)
-        # self.notify(cmd=Duan.CMD_APPEND)
 
     def update(self, observable: "Observable", **kwords: Any):
         # 实现 自我观察
@@ -1707,11 +1707,12 @@ class Duan(BaseChaoObject, Observer):
             # "disableUndo": False,
             # "filled": True,
             # "lock": False,
-            "text": "bi",
+            "text": "duan",
         }
         properties = {
             "linecolor": "#F1C40F",
             "linewidth": 3,
+            "title": f"Duan-{self.index}",
         }
 
         message = {
@@ -1737,6 +1738,7 @@ class Duan(BaseChaoObject, Observer):
                 future.result()  # 确保任务已添加到队列
             except Exception as e:
                 print(f"Error adding task to queue: {e}")
+        super().update(observable, **kwords)
 
     def __str__(self):
         return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None}, {self.start}, {self.end})"
@@ -1753,9 +1755,7 @@ class Duan(BaseChaoObject, Observer):
         if self.pre is not None:
             if self.pre.mid is None:
                 return None
-            print(self.pre)
             relation = double_relation(self.pre.left, self.pre.mid)
-            print(relation)
             if relation is Direction.JumpUp and self.direction is Direction.Up:
                 return "老阳"
             elif relation is Direction.JumpDown and self.direction is Direction.Down:
@@ -1793,6 +1793,8 @@ class Duan(BaseChaoObject, Observer):
     @mid.setter
     def mid(self, feature: FeatureSequence):
         self.__feature_setter(1, feature)
+        # if self.mid is not None:
+        #    self.end = self.mid.start
 
     @property
     def right(self) -> "FeatureSequence":
@@ -1816,7 +1818,9 @@ class Duan(BaseChaoObject, Observer):
 
     @end.setter
     def end(self, end: Union[FenXing, NewBar]):
-        old = self.__end
+        # old = self.__end
+        if self.__end is end:
+            return
         self.__end = end
         if self.direction is Direction.Up:
             self.high = end.speck
@@ -1840,12 +1844,12 @@ class Duan(BaseChaoObject, Observer):
                 if len(self.elements) >= 3:
                     if self.direction is Direction.Down:
                         if self.elements[-3].low < bi.high:
-                            dp("向下线段被笔破坏", bi)
+                            ddp("向下线段被笔破坏", bi)
                     if self.direction is Direction.Up:
                         if self.elements[-3].high > bi.low:
-                            dp("向上线段被笔破坏", bi)
+                            ddp("向上线段被笔破坏", bi)
             self.elements.append(bi)
-            self.notify(cmd=Duan.CMD_MODIFY)
+
         else:
             dp("线段添加元素时，元素不连续", self.elements[-1], bi)
             raise ChanException("线段添加元素时，元素不连续", self.elements[-1], bi)
@@ -1853,7 +1857,6 @@ class Duan(BaseChaoObject, Observer):
     def pop_element(self, bi: Bi) -> bool:
         if self.elements[-1] is bi:
             self.elements.pop()
-            self.notify(cmd=Duan.CMD_MODIFY)
             return True
         else:
             raise ChanException("线段弹出元素时，元素不匹配")
@@ -1863,7 +1866,7 @@ class Duan(BaseChaoObject, Observer):
     ) -> Tuple[
         Optional[FeatureSequence], Optional[FeatureSequence], Optional[FeatureSequence]
     ]:
-        features = FeatureSequence.analysis(self.elements, self.direction)
+        features = FeatureSequence.analysis(self.elements, self.direction, "tmp")
         if len(features) == 0:
             return None, None, None
         if len(features) == 1:
@@ -1904,11 +1907,10 @@ class Duan(BaseChaoObject, Observer):
             Direction.JumpUp,
             Direction.JumpDown,
         )
-        self.notify(cmd=Duan.CMD_MODIFY)
         return elements
 
     @staticmethod
-    def append(xds, duan, _from=None):
+    def append(xds, duan, _from="analyzer"):
         if xds and xds[-1].end is not duan.start:
             raise TypeError("线段连续性错误")
         i = 0
@@ -1919,14 +1921,20 @@ class Duan(BaseChaoObject, Observer):
         duan.index = i
         duan.pre = pre
         xds.append(duan)
-        duan.notify(cmd=Bi.CMD_APPEND)
+        if _from == "analyzer":
+            duan.notify(cmd=Duan.CMD_APPEND)
+        # ZhongShu.analyzer_push(duan, ZhongShu.DUAN_OBJS, Duan.OBJS, 0, _from)
+        ZhongShu._duan_analyzer()
 
     @staticmethod
-    def pop(xds, duan, _from=None):
+    def pop(xds, duan, _from="analyzer"):
         if xds:
             if xds[-1] is duan:
                 duan = xds.pop()
-                duan.notify(cmd=Bi.CMD_REMOVE)
+                if _from == "analyzer":
+                    duan.notify(cmd=Duan.CMD_REMOVE)
+                ZhongShu._duan_analyzer()
+                # ZhongShu.analyzer_pop(duan, ZhongShu.DUAN_OBJS, 0, _from)
                 return duan
             else:
                 raise ValueError
@@ -1939,9 +1947,7 @@ class Duan(BaseChaoObject, Observer):
         state: Optional[States] = duan.state
         last: Optional[Duan] = duan.pre
         last = xds[-2] if len(xds) > 1 else last
-        left: Optional[FeatureSequence] = duan.left
-        mid: Optional[FeatureSequence] = duan.mid
-        right: Optional[FeatureSequence] = duan.right
+
         lmr: Tuple[bool, bool, bool] = duan.lmr
 
         ddp("    " * level, cmd, state, lmr, duan, bi)
@@ -1955,7 +1961,6 @@ class Duan(BaseChaoObject, Observer):
                 last.right is None and bi in last.left
             ):
                 Duan.pop(xds, duan)
-                # self.__pop_duan_zs(duan, level)
                 last.pop_element(bi)
                 # last.features = [last.left, last.mid, None]
                 last.right = None
@@ -1966,59 +1971,12 @@ class Duan(BaseChaoObject, Observer):
         else:
             Duan.pop(xds, duan)
         return
-        if lmr == (False, False, False):
-            if len(duan.elements) >= 1:
-                raise ChanException("线段中有多个元素，但特征序列为空")
-            Duan.pop(xds, duan)
-            # self.__pop_duan_zs(duan, level)
-
-            if last is not None:
-                last.pop_element(bi)
-
-        elif lmr == (True, False, False):
-            if duan.direction is bi.direction:
-                return
-
-            left.remove(bi)
-            if not left:
-                # duan.features = [None, None, None]
-                duan.left = None
-
-        elif lmr == (True, True, False):
-            if duan.direction is bi.direction:
-                return
-            features = FeatureSequence.analysis(duan.elements, duan.direction)
-            mid.remove(bi)
-            if not mid:
-                # duan.features = [left, None, None]
-                duan.mid = None
-            else:
-                ...
-                # duan.features = [left, mid, None]
-            if len(features) >= 2:
-                if left in features:
-                    ddp("    " * level, cmd, state, "第二特征序列 修正", features)
-                    # duan.features = [features[-2], features[-1], None]
-                    duan.left = features[-2]
-                    duan.mid = features[-1]
-
-        elif lmr == (True, True, True):
-            if duan.direction is bi.direction:
-                return
-            right.remove(bi)
-            if right:
-                raise ChanException("右侧特征序列不为空")
-            duan.features = [left, mid, None]
-
-        else:
-            raise ChanException("未知的状态", state, lmr)
 
     @staticmethod
     def analyzer_append(bi: Bi, xds: list["Duan"], level: int = 0):
         cmd = "Duans.PUSH"
         new = Duan(None, bi.start, bi.end, [bi])
         if not xds:
-            # xds.append(new)
             Duan.append(xds, new)
             return
         duan: Duan = xds[-1]
@@ -2039,17 +1997,17 @@ class Duan(BaseChaoObject, Observer):
             ddp("    " * level, "方向相同, 更新结束点", duan.end, duan.state)
             if duan.mid:
                 if duan.direction is Direction.Up:
-                    if duan.mid.high < bi.high:
+                    if duan.high < bi.high:
                         duan.end = bi.end
-                        return
-                if duan.direction is Direction.Down:
-                    if duan.mid.low > bi.low:
+                    else:
+                        duan.end = duan.mid.start
+                else:
+                    if duan.low > bi.low:
                         duan.end = bi.end
-                        return
-                duan.end = duan.mid.start
+                    else:
+                        duan.end = duan.mid.start
             else:
                 duan.end = bi.end
-
             return
 
         if len(xds) == 1:
@@ -2086,152 +2044,444 @@ class Duan(BaseChaoObject, Observer):
 
             ddp("    " * level, f"{fx}终结, 缺口: {duan.jump}")
 
-        return
-        feature = FeatureSequence(
-            {bi}, Direction.Up if bi.direction is Direction.Down else Direction.Down
+        else:
+            duan.left, duan.mid, duan.right = duan.get_features()
+
+
+class ZhongShu(BaseChaoObject, Observer):
+    OBJS: List["ZhongShu"] = []
+    BI_OBJS: List["ZhongShu"] = []
+    DUAN_OBJS: List["ZhongShu"] = []
+    TYPE: Tuple["str"] = ("Bi", "Duan", "ZouShi")
+
+    CMD_APPEND = "append"
+    CMD_MODIFY = "modify"
+    CMD_REMOVE = "remove"
+    # __slots__ = "elements", "index", "level"
+
+    def __init__(
+        self, _type: str, direction: Direction, obj: Union[Bi, Duan, RawBar, NewBar]
+    ):
+        super().__init__()
+        self.__direction = direction
+        self.elements = [obj]
+        self.level = 0
+        self._type = _type
+        self.__third: Optional[Union[Bi, Duan]] = None
+        if type(obj) is Bi:
+            self.level = 1
+        if type(obj) is Duan:
+            self.level = 2
+        self.fake = None
+        self.attach(self)
+
+    def copy_zs(self, zs: "ZhongShu"):
+        self.elements = zs.elements
+        self.fake = zs.fake
+        self.level = zs.level
+        self.third = zs.third
+        self.type = zs._type
+        self.done = zs.done
+        self.__direction = zs.direction
+
+    def __str__(self):
+        return f"中枢({self.index}, {self.direction}, {self.zg}, {self.zd}, elements size={len(self.elements)}, {self.last_element})"
+
+    def __repr__(self):
+        return f"中枢({self.index}, {self.direction}, {self.zg}, {self.zd}, elements size={len(self.elements)}, {self.last_element})"
+
+    def __eq__(self, other: "ZhongShu") -> bool:
+        # `__eq__` is an instance method, which also accepts
+        # one other object as an argument.
+
+        if (
+            type(other) == type(self)
+            and other.elements == self.elements
+            and other.direction == self.direction
+            and other.third == self.third
+        ):
+            return True
+        else:
+            return False  # 返回False这一步也是需要写的哈，不然判断失败就没有返回值了
+
+    def update(self, observable: "Observable", **kwords: Any):
+        cmd = kwords.get("cmd")
+        points = []
+        if cmd == ZhongShu.CMD_REMOVE:
+            points = []
+        if cmd == ZhongShu.CMD_APPEND:
+            points = [
+                {"time": int(self.start.dt.timestamp()), "price": self.zg},
+                {
+                    "time": int(self.elements[-1].start.mid.dt.timestamp()),
+                    "price": self.zd,
+                },
+            ]
+        if cmd == ZhongShu.CMD_MODIFY:
+            if self.left is None:
+                return
+            points = [
+                {"time": int(self.start.dt.timestamp()), "price": self.zg},
+                {
+                    "time": int(self.elements[-1].start.mid.dt.timestamp()),
+                    "price": self.zd,
+                },
+            ]
+
+        options = {
+            "shape": "rectangle",
+            "text": f"zs",
+        }
+        properties = {
+            "color": "#993333"
+            if self.direction is Direction.Down
+            else "#99CC99",  # 上下上 为 红色，反之为 绿色
+            "fillBackground": True,
+            "backgroundColor": "rgba(156, 39, 176, 0.2)"
+            if self.level == 1
+            else "rgba(1, 39, 176, 0.2)",
+            "linewidth": 1 if self.level == 1 else 2,
+            "transparency": 50,
+            "showLabel": False,
+            "horzLabelsAlign": "left",
+            "vertLabelsAlign": "bottom",
+            "textColor": "#9c27b0",
+            "fontSize": 14,
+            "bold": False,
+            "italic": False,
+            "extendLeft": False,
+            "extendRight": False,
+            "visible": True,
+            "frozen": False,
+            "intervalsVisibilities": {
+                "ticks": True,
+                "seconds": True,
+                "secondsFrom": 1,
+                "secondsTo": 59,
+                "minutes": True,
+                "minutesFrom": 1,
+                "minutesTo": 59,
+                "hours": True,
+                "hoursFrom": 1,
+                "hoursTo": 24,
+                "days": True,
+                "daysFrom": 1,
+                "daysTo": 366,
+                "weeks": True,
+                "weeksFrom": 1,
+                "weeksTo": 52,
+                "months": True,
+                "monthsFrom": 1,
+                "monthsTo": 12,
+                "ranges": True,
+            },
+            "title": f"{self._type}中枢-{self.index}",
+            "text": "",
+        }
+
+        message = {
+            "type": "shape",
+            "cmd": cmd,
+            "name": "rectangle",
+            "id": self.shape_id,
+            "points": points,
+            "options": options,
+            "properties": properties,
+        }
+
+        if cmd in (ZhongShu.CMD_APPEND, ZhongShu.CMD_REMOVE, ZhongShu.CMD_MODIFY):
+            # 后端实现 增 删 改
+            future = asyncio.run_coroutine_threadsafe(
+                Observer.queue.put(message), Observer.loop
+            )
+
+            try:
+                future.result()  # 确保任务已添加到队列
+            except Exception as e:
+                print(f"Error adding task to queue: {e}")
+
+    @property
+    def third(self):
+        return self.__third
+
+    @third.setter
+    def third(self, third):
+        self.__third = third
+        if third is not None:
+            points = [
+                {"time": int(third.end.dt.timestamp()), "price": third.end.speck},
+            ]
+            if third.end.mid._appended is True:
+                return
+            third.end.mid._appended = True
+
+            if third.end.shape is Shape.G:
+                options = {
+                    "shape": "arrow_down",
+                    "text": f"{self._type}三卖",
+                }
+                properties = {"title": f"{self._type}三卖"}
+            else:
+                options = {
+                    "shape": "arrow_up",
+                    "text": f"{self._type}三买",
+                }
+                properties = {"title": f"{self._type}三买"}
+            message = {
+                "type": "shape",
+                "cmd": ZhongShu.CMD_APPEND,
+                "name": "rectangle",
+                "id": third.end.mid.shape_id,
+                "points": points,
+                "options": options,
+                "properties": properties,
+            }
+            future = asyncio.run_coroutine_threadsafe(
+                Observer.queue.put(message), Observer.loop
+            )
+
+            try:
+                future.result()  # 确保任务已添加到队列
+            except Exception as e:
+                print(f"Error adding task to queue: {e}")
+
+    @property
+    def left(self) -> Union[Bi, Duan, RawBar, NewBar]:
+        return self.elements[0] if self.elements else None
+
+    @property
+    def mid(self) -> Union[Bi, Duan, RawBar, NewBar]:
+        return self.elements[1] if len(self.elements) > 1 else None
+
+    @property
+    def right(self) -> Union[Bi, Duan, RawBar, NewBar]:
+        return self.elements[2] if len(self.elements) > 2 else None
+
+    @property
+    def last_element(self) -> Union[Bi, Duan, RawBar, NewBar]:
+        return self.elements[-1] if self.elements else None
+
+    @property
+    def direction(self) -> Direction:
+        return self.__direction
+        # return Direction.Down if self.start.shape is Shape.D else Direction.Up
+
+    @property
+    def zg(self) -> float:
+        return min(self.elements[:3], key=lambda o: o.high).high
+
+    @property
+    def zd(self) -> float:
+        return max(self.elements[:3], key=lambda o: o.low).low
+
+    @property
+    def g(self) -> float:
+        return min(self.elements, key=lambda o: o.high).high
+
+    @property
+    def d(self) -> float:
+        return max(self.elements, key=lambda o: o.low).low
+
+    @property
+    def gg(self) -> float:
+        return max(self.elements, key=lambda o: o.high).high
+
+    @property
+    def dd(self) -> float:
+        return min(self.elements, key=lambda o: o.low).low
+
+    @property
+    def high(self) -> float:
+        return self.zg
+
+    @property
+    def low(self) -> float:
+        return self.zd
+
+    @property
+    def start(self) -> FenXing:
+        return self.left.start
+
+    @property
+    def end(self) -> FenXing:
+        return self.elements[-1].end
+
+    def check(self) -> bool:
+        return double_relation(self.left, self.right) in (
+            Direction.Down,
+            Direction.Up,
+            Direction.Left,
+            Direction.Right,
         )
-        if lmr == (False, False, False):
-            assert feature.direction is duan.direction
 
-            duan.append_element(bi)
-            # duan.features = [feature, None, None]
-            duan.left = feature
+    def pop_element(self, obj: Union[Bi, Duan], _from):
+        if self.last_element.start is obj.start:
+            if self.last_element is not obj:
+                dp("警告：中枢元素不匹配!!!", self.last_element, obj)
+            self.elements.pop()
+        else:
+            raise ChanException("中枢无法删除元素", self.last_element, obj)
 
-        elif lmr == (True, False, False):
-            assert left.direction is duan.direction
-            duan.append_element(bi)
-            relation = double_relation(left, bi)
-            ddp("    " * level, "第二特征序列", relation, duan.state)
-            if relation is Direction.Left:
-                left.add(bi)
-            elif relation is Direction.Right:
-                if last is not None and last.state in ("老阳", "老阴"):
-                    left.add(bi)
+    def append_element(self, obj: Union[Bi, Duan], _from):
+        relation = double_relation(self, obj)
+        if self.last_element.end is obj.start:
+            self.elements.append(obj)
+        else:
+            raise ChanException("中枢无法添加元素", relation, self.last_element, obj)
+
+    @classmethod
+    def _bi_analyzer(cls):
+        elements = Bi.OBJS
+        old_size = len(ZhongShu.BI_OBJS)
+        flag, zss = ZhongShu.analyzer(elements)
+        new_size = len(zss)
+        if old_size <= new_size:
+            for i in range(new_size):
+                if i >= old_size:
+                    new = zss[i]
+                    if len(new.elements) >= 3:
+                        ZhongShu.append(cls.BI_OBJS, new, "analyzer")
                 else:
-                    # duan.features = [left, feature, None]
-                    duan.mid = feature
+                    new = zss[i]
+                    old = ZhongShu.BI_OBJS[i]
+                    if new != old:
+                        old.copy_zs(new)
+                        old.notify(cmd=ZhongShu.CMD_MODIFY)
+        else:
+            ...
 
-            elif relation in (Direction.Up, Direction.JumpUp):
-                if duan.direction is Direction.Up:
-                    # duan.features = [left, feature, None]
-                    duan.mid = feature
+    @classmethod
+    def _duan_analyzer(cls):
+        elements = Duan.OBJS
+        old_size = len(ZhongShu.DUAN_OBJS)
+        flag, zss = ZhongShu.analyzer(elements)
+        new_size = len(zss)
+
+        if old_size <= new_size:
+            for i in range(new_size):
+                if i >= old_size:
+                    new = zss[i]
+                    if len(new.elements) >= 3:
+                        ZhongShu.append(cls.DUAN_OBJS, new, "analyzer")
                 else:
-                    # Down
-                    # duan.features = [left, feature, None]
-                    duan.mid = feature
+                    new = zss[i]
+                    old = ZhongShu.DUAN_OBJS[i]
+                    if new != old:
+                        old.copy_zs(new)
+                        old.notify(cmd=ZhongShu.CMD_MODIFY)
+        else:
+            ...
 
-            elif relation in (Direction.Down, Direction.JumpDown):
-                if duan.direction is Direction.Down:
-                    # duan.features = [left, feature, None]
-                    duan.mid = feature
-                else:
-                    # Up
-                    # duan.features = [left, feature, None]
-                    duan.mid = feature
+    @staticmethod
+    def append(zss: List["ZhongShu"], zs: "ZhongShu", _from=None):
+        i = 0
+        if zss:
+            i = zss[-1].index + 1
+        zss.append(zs)
+        zs.index = i
+        if _from == "analyzer":
+            zs.notify(cmd=ZhongShu.CMD_APPEND)
 
+    @staticmethod
+    def pop(zss: List["ZhongShu"], zs: "ZhongShu", _from=None) -> "ZhongShu":
+        if zss:
+            if zss[-1] is zs:
+                if _from == "analyzer":
+                    zs.notify(cmd=ZhongShu.CMD_REMOVE)
+                return zss.pop()
+
+    @staticmethod
+    def analyzer_pop(obj: Union[Bi, Duan], zss: List["ZhongShu"], level: int, _from):
+        cmd = "ZS.POP"
+        if not zss:
+            return
+
+        last = zss[-1]
+        zsdp("    " * level, cmd, obj in last.elements, obj)
+        last.pop_element(obj, _from)
+        if last.last_element is None:
+            ZhongShu.pop(zss, last, _from)
+            if zss:
+                last = zss[-1]
+                if obj is last.last_element:
+                    dp("递归删除中枢元素", obj)
+                    ZhongShu.analyzer_pop(obj, zss, level, _from)
+
+    @staticmethod
+    def analyzer_push(
+        obj: Union[Bi, Duan],
+        zss: List["ZhongShu"],
+        objs: List[Union[Bi, Duan]],
+        level: int,
+        _from="analyzer",
+    ):
+        cmd = "ZS.PUSH"
+        new = ZhongShu(
+            type(obj).__name__,
+            Direction.Up if obj.direction is Direction.Down else Direction.Down,
+            obj,
+        )
+        if not zss:
+            ZhongShu.append(zss, new, _from)
+            return
+        last = zss[-1]
+        zsdp("    " * level, cmd, len(last.elements), obj)
+
+        if len(last.elements) >= 3:
+            relation = double_relation(last, obj)
+            if relation in (Direction.JumpUp, Direction.JumpDown):
+                last.third = obj
+                ZhongShu.append(zss, new, _from)
+                zsdp("    " * level, cmd, "添加新中枢", new)
             else:
-                raise ChanException("未知的关系", relation)
+                last.append_element(obj, _from)
 
-        elif lmr == (True, True, False):
-            assert mid.direction is duan.direction
-            duan.append_element(bi)
-            relation = double_relation(mid, bi)
-            ddp("    " * level, "第三特征序列", relation, duan.state)
-            if relation is Direction.Left:
-                mid.add(bi)
-
-            elif relation is Direction.Right:
-                if last is not None and last.state in ("老阳", "老阴"):
-                    mid.add(bi)
+        elif len(last.elements) == 2:
+            flag, scope = triple_scope(last.left, last.mid, obj)
+            relation = double_relation(last.left, obj)
+            zsdp("    " * level, cmd, "中枢范围:", flag, scope)
+            if relation in (Direction.JumpUp, Direction.JumpDown):
+                # 这里需要判断走势
+                if obj.done is False:
+                    last.append_element(obj, _from)
                 else:
-                    # duan.features = [mid, feature, None]
-                    duan.left = mid
-                    duan.mid = feature
-
-            elif relation in (Direction.Up, Direction.JumpUp):
-                if duan.direction is Direction.Up:
-                    duan.left = mid
-                    duan.mid = feature
-                    # duan.features = [mid, feature, None]
-                else:
-                    # Down, 底分型
-                    duan.right = feature
-                    # duan.features = [left, mid, feature]
-                    duan.end = mid.start
-                    duan.done = True
-                    elements = duan.set_done(mid.start)
-
-                    new = Duan(duan, elements[0].start, elements[-1].end, elements)
-                    if double_relation(left, mid) is Direction.JumpDown:
-                        duan.pre = new
-                    ddp(
-                        "    " * level,
-                        "底分型终结",
-                        duan.pre is not None,
-                        elements[0].direction,
-                    )
-                    features = FeatureSequence.analysis(elements, new.direction)
-                    if features:
-                        new.left = features[-1]
-                        # new.features = [features[-1], None, None]
-                        if len(features) > 1:
-                            new.left = features[-2]
-                            new.mid = features[-1]
-                            # new.features = [features[-2], features[-1], None]
-                    if duan.end is new.start:
-                        Duan.append(xds, new)
-
-                    else:
-                        raise ChanException(
-                            "线段不连续", duan.elements[-1].end, new.elements[0].start
-                        )
-
-            elif relation in (Direction.Down, Direction.JumpDown):
-                if duan.direction is Direction.Down:
-                    duan.left = mid
-                    duan.mid = feature
-                    # duan.features = [mid, feature, None]
-                else:
-                    # Up, 顶分型
-                    duan.right = feature
-                    # duan.features = [left, mid, feature]
-                    duan.end = mid.start
-                    duan.done = True
-                    elements = duan.set_done(mid.start)
-
-                    # new = Duan.new(duan.index + 1, elements[0])
-                    new = Duan(duan, elements[0].start, elements[-1].end, elements)
-                    if double_relation(left, mid) is Direction.JumpUp:
-                        duan.pre = new
-                    ddp(
-                        "    " * level,
-                        "顶分型终结",
-                        duan.pre is not None,
-                        elements[0].direction,
-                    )
-                    features = FeatureSequence.analysis(elements, new.direction)
-                    if features:
-                        new.left = features[-1]
-                        # new.features = [features[-1], None, None]
-                        if len(features) > 1:
-                            new.left = features[-2]
-                            new.mid = features[-1]
-                            # new.features = [features[-2], features[-1], None]
-
-                    if duan.end is new.start:
-                        Duan.append(xds, new)
-                    else:
-                        raise ChanException(
-                            "线段不连续", duan.elements[-1].end, new.elements[0].start
-                        )
-
+                    ZhongShu.pop(zss, last, _from)
+                    ZhongShu.append(zss, new, _from)
+                    zsdp("    " * level, cmd, "不满足中枢条件弹出并添加新中枢", new)
             else:
-                raise ChanException("未知的关系", relation)
+                last.append_element(obj, _from)
+
+        elif len(last.elements) == 1:
+            i = objs.index(last.elements[0])
+            if i > 1:
+                relation = double_relation(objs[i - 2], last.elements[0])
+                if (
+                    last.elements[0].direction is Direction.Up
+                    and relation is Direction.Up
+                ) or (
+                    last.elements[0].direction is Direction.Down
+                    and relation is Direction.Down
+                ):
+                    ZhongShu.pop(zss, last, _from)
+                    ZhongShu.append(zss, new, _from)
+                    zsdp("    " * level, cmd, "不满足中枢条件弹出并添加新中枢2", new)
+                else:
+                    last.append_element(obj, _from)
+            else:
+                last.append_element(obj, _from)
 
         else:
-            raise ChanException("未知的状态", state, lmr)
+            ZhongShu.pop(zss, last, _from)
+            ZhongShu.append(zss, new, _from)
 
-        # duans[-1].check()
+    @staticmethod
+    def analyzer(elements: List[Union[Bi, Duan]]) -> tuple[bool, list]:
+        if len(elements) < 3:
+            return False, []
+        zss: List[Union[Bi, Duan, ZhongShu]] = []
+        for obj in elements:
+            ZhongShu.analyzer_push(obj, zss, elements, 0, "tmp")
+        return len(zss) > 0, zss
 
 
 class BaseAnalyzer:
@@ -2243,6 +2493,9 @@ class BaseAnalyzer:
         FenXing.OBJS = []
         Bi.OBJS = []
         Duan.OBJS = []
+        ZhongShu.OBJS = []
+        ZhongShu.BI_OBJS = []
+        ZhongShu.DUAN_OBJS = []
         self._raws: List[RawBar] = RawBar.OBJS  # 原始K线列表
         self._news: List[NewBar] = NewBar.OBJS  # 去除包含关系K线列表
         self._fxs: List[FenXing] = FenXing.OBJS  # 分型列表
@@ -2268,11 +2521,10 @@ class BaseAnalyzer:
     ):
         last = self._news[-1] if self._news else None
         news = self._news
-        new_bar = None
         if last is None:
             bar.to_new_bar(None)
         else:
-            new_bar: Optional[NewBar] = last.merge(bar)
+            last.merge(bar)
 
         klines = news
         if len(klines) == 1:
@@ -2308,16 +2560,7 @@ class BaseAnalyzer:
 
         fx: Optional[FenXing] = NewBar.get_last_fx()
         if fx is not None:
-            # return Bi.analyzer(fx, FenXing.OBJS, Bi.OBJS, NewBar.OBJS)
-            if self._bis:
-                Bi.analyzer(fx, FenXing.OBJS, Bi.OBJS, NewBar.OBJS)
-                # Bi.last().append_new_bar(new_bar)
-                # if fx.shape in (Shape.G, Shape.D):
-                #    Bi.last().append_fx(fx)
-            else:
-                Bi.analyzer(fx, FenXing.OBJS, Bi.OBJS, NewBar.OBJS)
-                # if fx.shape in (Shape.G, Shape.D):
-                #    Bi(None, fx, fx.right, [fx.mid, fx.right])
+            Bi.analyzer(fx, FenXing.OBJS, Bi.OBJS, NewBar.OBJS)
         Bi.calc_fake()
 
 
@@ -2392,7 +2635,7 @@ class CZSCAnalyzer:
     def load_bytes(cls, symbol: str, bytes_data: bytes, freq: int) -> "Self":
         size = struct.calcsize(">6d")
         obj = cls(symbol, freq)
-        bytes_data = bytes_data[size * 1800 :]
+        bytes_data = bytes_data# [: size * 300]
         while bytes_data:
             t = bytes_data[:size]
             k = RawBar.from_bytes(t)
@@ -2426,7 +2669,8 @@ class CZSCAnalyzer:
 
 
 def main_load_file(path: str = "btcusd-300-1713295800-1715695500.dat"):
-    return CZSCAnalyzer.load_file(path)
+    obj = CZSCAnalyzer.load_file(path)
+    return obj
 
 
 app = FastAPI()
@@ -2643,7 +2887,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 shape.bringToFront();
                 shape.setProperties(obj.properties);
                 //console.log(obj.id, shape_id);
-
+                console.log("add", obj.name, obj.id);
             }
         }
 
@@ -2654,7 +2898,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 if (debug) console.log(id, shape);
                 window.tvWidget.chart().removeEntity(id);
                 delete shape_ids[shapeId];
-                if (debug) console.log("del", shapeId, id);
+                console.log("del", shapeId, id);
 
             }
         }
@@ -2671,18 +2915,23 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 
         function modifyShape(obj) {
             const id = shape_ids[obj.id];
-            const shape = window.tvWidget.chart().getShapeById(id);
-            if (shape) {
-                if (debug) console.log(obj);
-                console.log(shape.getProperties());
-                shape.setPoints(obj.points);
-                shape.setProperties(obj.properties);
-                shape.bringToFront();
+            try {
+                const shape = window.tvWidget.chart().getShapeById(id);
+                if (shape) {
+                    if (debug) console.log(obj);
+                    console.log(shape.getProperties());
+                    shape.setPoints(obj.points);
+                    shape.setProperties(obj.properties);
+                    shape.bringToFront();
 
-            } else {
-                console.log("Shape does not exist.");
+                } else {
+                    console.log("Shape does not exist.");
+                }
+            } catch (e) {
+                console.log(obj.options.shape, obj.id, e)
             }
         }
+
 
         function initOnReady() {
             console.log("init widget");
@@ -2705,7 +2954,30 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 },
                 disabled_features: ["use_localstorage_for_settings", "header_symbol_search"],
             }));
+            widget.headerReady().then(function () {
+                widget.onChartReady(function () {
+                    widget.subscribe("drawing_event", function (sourceId, drawingEventType) {
+                        if (drawingEventType.indexOf("click") === 0) {
+
+                            var shape = widget.activeChart().getShapeById(sourceId);
+                            var points = shape._source._points;
+                            console.log(points, points.length, shape.getProperties());
+                            var res = [];
+                            for (var i = 0; i < points.length; i++) {
+                                console.log(i, points[i])
+                                res.push(parseInt(points[i].price))
+                            }
+                            console.log(sourceId, drawingEventType, res.join(','))
+                        }
+
+
+                    })
+
+                });
+            
+            });
         }
+
 
         window.addEventListener("DOMContentLoaded", initOnReady, false);
 
@@ -2716,7 +2988,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 </body>
 </html>
 
-        """.replace("$charting_library$", charting_library)
+    """.replace("$charting_library$", charting_library)
     )
 
 
@@ -2781,7 +3053,7 @@ class ConnectionManager:
             await connection.send_text(message)
 
 
-# RawBar.PATCHS[ts2int("2024-04-17 21:20:00")] = Pillar(62356, 62100)
+# RawBar.PATCHES[ts2int("2024-04-17 21:20:00")] = Pillar(62356, 62100)
 manager = ConnectionManager()
 Observer.TIME = 0.03
 if __name__ == "__main__":
