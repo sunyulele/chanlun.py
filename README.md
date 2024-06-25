@@ -13,7 +13,7 @@ uvicorn czsc:app --reload --port 8080
 
 #### 💌 支持作者
 
-如果觉得框错，或者已经在使用了，希望你可以去<a target="_blank" href="https://github.com/YuYuKunKun/chanlun.py">Gitee</a>
+如果觉得框错，或者已经在使用了，希望你可以去<a target="_blank" href="https://github.com/YuYuKunKun/chanlun.py">Github</a>
 帮我点个 ⭐
 Star，这将是对我极大的鼓励与支持。
 
