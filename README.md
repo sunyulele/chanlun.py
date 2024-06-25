@@ -17,3 +17,4 @@ uvicorn czsc:app --reload --port 8080
 帮我点个 ⭐
 Star，这将是对我极大的鼓励与支持。
 
+下一步与Backtrader集成测试第三买卖点，不测而测
