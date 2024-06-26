@@ -393,7 +393,7 @@ class TVShapeID(object):
         )
 
 
-class BaseChaoObject(Observable):
+class BaseChanObject(Observable):
     """ """
 
     __slots__ = "cache", "elements", "__done", "index", "pre", "__shape_id", "__pillar"
@@ -436,7 +436,7 @@ class BaseChaoObject(Observable):
     @done.setter
     def done(self, value: bool):
         self.__done = value
-        self.notify(cmd=BaseChaoObject.CMD_DONE, obj=self)
+        self.notify(cmd=BaseChanObject.CMD_DONE, obj=self)
 
     @property
     def macd(self) -> float:
@@ -455,7 +455,7 @@ class BaseChaoObject(Observable):
         return cls.OBJS[-1] if cls.OBJS else None
 
 
-class RawBar(BaseChaoObject, Observer):
+class RawBar(BaseChanObject, Observer):
     """
     原始K线对象
 
@@ -575,7 +575,7 @@ class RawBar(BaseChaoObject, Observer):
     @property
     def macd(self) -> float:
         return self.cache[
-            f"macd_{BaseChaoObject.FAST}_{BaseChaoObject.SLOW}_{BaseChaoObject.SIGNAL}"
+            f"macd_{BaseChanObject.FAST}_{BaseChanObject.SLOW}_{BaseChanObject.SIGNAL}"
         ]
 
     @property
@@ -588,7 +588,7 @@ class RawBar(BaseChaoObject, Observer):
         return Direction.Up if self.open < self.close else Direction.Down
 
 
-class NewBar(BaseChaoObject, Observer):
+class NewBar(BaseChanObject, Observer):
     """
     缠论 K线
     """
@@ -782,7 +782,7 @@ class NewBar(BaseChaoObject, Observer):
         return self.low if self.direction == Direction.Down else self.high
 
 
-class FenXing(BaseChaoObject):
+class FenXing(BaseChanObject):
     """
     缠论 分型
     """
@@ -848,7 +848,7 @@ class FenXing(BaseChaoObject):
         return fxs.pop()
 
 
-class Bi(BaseChaoObject, Observer):
+class Bi(BaseChanObject, Observer):
     """
     缠论笔
     """
@@ -1646,7 +1646,7 @@ class FeatureSequence(Observable, Observer):
         return result
 
 
-class Duan(BaseChaoObject, Observer):
+class Duan(BaseChanObject, Observer):
     OBJS: List["Duan"] = []
     FAKE = None
     CMD_APPEND = "append"
@@ -2049,7 +2049,7 @@ class Duan(BaseChaoObject, Observer):
             duan.left, duan.mid, duan.right = duan.get_features()
 
 
-class ZhongShu(BaseChaoObject, Observer):
+class ZhongShu(BaseChanObject, Observer):
     OBJS: List["ZhongShu"] = []
     BI_OBJS: List["ZhongShu"] = []
     DUAN_OBJS: List["ZhongShu"] = []
@@ -2509,6 +2509,44 @@ class ZhongShu(BaseChaoObject, Observer):
         return len(zss) > 0, zss
 
 
+class ZouShi(BaseChanObject, Observer):
+    OBJS: List["ZouShi"] = []
+    CMD_APPEND = "append"
+    CMD_MODIFY = "modify"
+    CMD_REMOVE = "remove"
+
+    def __init__(self, obj: Union[Bi, Duan, Self]):
+        super().__init__()
+        self.elements = [obj]
+        self.zss: List[ZhongShu] = []
+
+        self.attach(self)
+
+    @property
+    def last_element(self) -> Union[Bi, Duan, RawBar, NewBar, ZhongShu]:
+        return self.elements[-1] if self.elements else None
+
+    def pop_element(self, obj: Union[Bi, Duan], _from):
+        if self.last_element.start is obj.start:
+            if self.last_element is not obj:
+                dp("警告：走势元素不匹配!!!", self.last_element, obj)
+            self.elements.pop()
+        else:
+            raise ChanException("走势无法删除元素", self.last_element, obj)
+
+    def append_element(self, obj: Union[Bi, Duan], _from):
+        relation = double_relation(self, obj)
+        if self.last_element.end is obj.start:
+            self.elements.append(obj)
+        else:
+            raise ChanException("走势无法添加元素", relation, self.last_element, obj)
+
+    def update(self, observable: "Observable", **kwords: Any):
+        cmd = kwords.get('cmd')
+
+        super().update(observable, **kwords)
+
+
 class BaseAnalyzer:
     def __init__(self, symbol: str, freq: int):
         self.__symbol = symbol
@@ -2540,9 +2578,9 @@ class BaseAnalyzer:
     def push(
         self,
         bar: RawBar,
-        fast_period: int = BaseChaoObject.FAST,
-        slow_period: int = BaseChaoObject.SLOW,
-        signal_period: int = BaseChaoObject.SIGNAL,
+        fast_period: int = BaseChanObject.FAST,
+        slow_period: int = BaseChanObject.SLOW,
+        signal_period: int = BaseChanObject.SIGNAL,
     ):
         last = self._news[-1] if self._news else None
         news = self._news
@@ -2871,7 +2909,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     supports_marks: false,
                     supports_timescale_marks: true,
                     supports_time: true,
-                    supported_resolutions: ['1s', '1', '3', '5', '6', '12', '24', '30', '48', '64', '128', '1H', '2H', '3H', '4H', '6H', '8H', '12H', '36H', '1D', '2D', '3D', '5D', '12D', '1W'],
+                    supported_resolutions: [5, ],//['1s', '1', '3', '5', '6', '12', '24', '30', '48', '64', '128', '1H', '2H', '3H', '4H', '6H', '8H', '12H', '36H', '1D', '2D', '3D', '5D', '12D', '1W'],
                 }));
             },
             searchSymbols: async (
@@ -2908,7 +2946,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     volume_precision: 1,
                     data_status: 'streaming',
                     has_intraday: true,
-                    intraday_multipliers: ['1', "3", "5", '15', "30", '60', "120", "240", "360", "720"],
+                    intraday_multipliers: [5,], //['1', "3", "5", '15', "30", '60', "120", "240", "360", "720"],
                     has_seconds: false,
                     seconds_multipliers: ['1S',],
                     has_daily: true,
@@ -2978,7 +3016,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                         }
 
                     } else {
-                        console.log(message);
+                        console.log("未知消息", message);
                     }
                 };
             },
@@ -3001,7 +3039,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 shape.bringToFront();
                 shape.setProperties(obj.properties);
                 //console.log(obj.id, shape_id);
-                console.log("add", obj.name, obj.id);
+                //console.log("add", obj.name, obj.id);
             }
         }
 
@@ -3012,7 +3050,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 if (debug) console.log(id, shape);
                 window.tvWidget.chart().removeEntity(id);
                 delete shape_ids[shapeId];
-                console.log("del", shapeId, id);
+                //console.log("del", shapeId, id);
 
             }
         }
@@ -3033,7 +3071,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 const shape = window.tvWidget.chart().getShapeById(id);
                 if (shape) {
                     if (debug) console.log(obj);
-                    console.log(shape.getProperties());
+                    //console.log(shape.getProperties());
                     shape.setPoints(obj.points);
                     shape.setProperties(obj.properties);
                     shape.bringToFront();
@@ -3048,7 +3086,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 
 
         function initOnReady() {
-            console.log("init widget");
+            //console.log("init widget");
             const widget = (window.tvWidget = new TradingView.widget({
                 symbol: "Bitfinex:BTC/USD", // Default symbol
                 interval: "5", // Default interval
@@ -3060,15 +3098,30 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 locale: "zh",
                 theme: "dark",
                 debug: false,
+                timeframe: '3D',
                 user_id: 'public_user_id',
                 client_id: 'yourserver.com',
                 favorites: {
                     intervals: ["1", "3", "5"],
                     drawingTools: ["LineToolPath", "LineToolRectangle", "LineToolTrendLine"],
                 },
-                disabled_features: ["use_localstorage_for_settings", "header_symbol_search"],
+                disabled_features: [
+                    "use_localstorage_for_settings", // 本地设置
+                    "header_symbol_search", // 搜索
+                    "header_undo_redo", // 重做
+                    "header_screenshot", // 截图
+                    //"header_resolutions",// 周期
+                    "header_compare", // 对比叠加
+                    "header_chart_type",
+                    "go_to_date", // 日期跳转
+                ],
+                time_frames: [
+                    { text: "3d", resolution: "5", description: "3 Days" },
+                    { text: "7d", resolution: "5", description: "7 Days" },
+                ],
             }));
             widget.headerReady().then(function () {
+                //widget.activeChart().createStudy('MACD');
                 function createHeaderButton(text, title, clickHandler, options) {
                     var button = widget.createButton(options);
                     button.setAttribute('title', title);
@@ -3078,10 +3131,10 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 
                 createHeaderButton('笔', '显示隐藏笔', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        console.log(name);
+                        //console.log(name);
                         if (name === "trend_line") {
                             var shape = widget.activeChart().getShapeById(id);
-                            console.log(id, shape.getProperties());
+                            //console.log(id, shape.getProperties());
                             shape = window.tvWidget.chart().getShapeById(id);
 
                             var properties = shape.getProperties();
@@ -3098,10 +3151,10 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 });
                 createHeaderButton('段', '显示隐藏段', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        console.log(name);
+                        //console.log(name);
                         if (name === "trend_line") {
                             var shape = widget.activeChart().getShapeById(id);
-                            console.log(id, shape.getProperties());
+                            //console.log(id, shape.getProperties());
                             shape = window.tvWidget.chart().getShapeById(id);
 
                             var properties = shape.getProperties();
@@ -3118,10 +3171,10 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 });
                 createHeaderButton('笔中枢', '显示隐藏笔中枢', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        console.log(name);
+                        //console.log(name);
                         if (name === "rectangle") {
                             var shape = widget.activeChart().getShapeById(id);
-                            console.log(id, shape.getProperties());
+                            //console.log(id, shape.getProperties());
                             shape = window.tvWidget.chart().getShapeById(id);
 
                             var properties = shape.getProperties();
@@ -3138,10 +3191,10 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 });
                 createHeaderButton('段中枢', '显示隐藏段中枢', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        console.log(name);
+                        //console.log(name);
                         if (name === "rectangle") {
                             var shape = widget.activeChart().getShapeById(id);
-                            console.log(id, shape.getProperties());
+                            //console.log(id, shape.getProperties());
                             shape = window.tvWidget.chart().getShapeById(id);
 
                             var properties = shape.getProperties();
@@ -3165,10 +3218,10 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                             console.log(points, points.length, shape.getProperties());
                             var res = [];
                             for (var i = 0; i < points.length; i++) {
-                                console.log(i, points[i])
+                                //console.log(i, points[i])
                                 res.push(parseInt(points[i].price))
                             }
-                            console.log(sourceId, drawingEventType, res.join(','))
+                            //console.log(sourceId, drawingEventType, res.join(','))
                         }
 
 
