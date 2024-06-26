@@ -3,3 +3,5 @@ pyecharts>=2.0.5
 termcolor>=2.4.0
 numpy
 uvicorn
+fastapi
+websockets
