@@ -143,7 +143,12 @@ def RSQ(close: [np.array, list]) -> float:
 
     y_mean = np.mean(y)
     ss_tot = sum([(y1 - y_mean) * (y1 - y_mean) for y1 in y]) + 0.00001
-    ss_err = sum([(y[i] - slope * x[i] - y_intercept) * (y[i] - slope * x[i] - y_intercept) for i in range(len(x))])
+    ss_err = sum(
+        [
+            (y[i] - slope * x[i] - y_intercept) * (y[i] - slope * x[i] - y_intercept)
+            for i in range(len(x))
+        ]
+    )
     rsq = 1 - ss_err / ss_tot
 
     return round(rsq, 4)
@@ -182,10 +187,14 @@ def heat_map(
     if not y_label:
         y_label = sorted(list(set([s["y"] for s in data])))
 
-    vis_map_opts = opts.VisualMapOpts(pos_left="90%", pos_top="20%", min_=min(heat), max_=max(heat))
+    vis_map_opts = opts.VisualMapOpts(
+        pos_left="90%", pos_top="20%", min_=min(heat), max_=max(heat)
+    )
     title_opts = opts.TitleOpts(title=title)
     init_opts = opts.InitOpts(page_title=title, width=width, height=height)
-    dz_inside = opts.DataZoomOpts(False, "inside", xaxis_index=[0], range_start=80, range_end=100)
+    dz_inside = opts.DataZoomOpts(
+        False, "inside", xaxis_index=[0], range_start=80, range_end=100
+    )
     dz_slider = opts.DataZoomOpts(
         True,
         "slider",
@@ -357,7 +366,10 @@ def kline_pro(
     # ------------------------------------------------------------------------------------------------------------------
     dts = [x["dt"] for x in kline]
     # k_data = [[x['open'], x['close'], x['low'], x['high']] for x in kline]
-    k_data = [opts.CandleStickItem(name=i, value=[x["open"], x["close"], x["low"], x["high"]]) for i, x in enumerate(kline)]
+    k_data = [
+        opts.CandleStickItem(name=i, value=[x["open"], x["close"], x["low"], x["high"]])
+        for i, x in enumerate(kline)
+    ]
 
     vol = []
     for i, row in enumerate(kline):
@@ -428,10 +440,14 @@ def kline_pro(
             is_smooth=True,
             symbol_size=0,
             label_opts=label_not_show_opts,
-            linestyle_opts=opts.LineStyleOpts(opacity=0.8, width=1.0, color=ma_colors[i]),
+            linestyle_opts=opts.LineStyleOpts(
+                opacity=0.8, width=1.0, color=ma_colors[i]
+            ),
         )
 
-    chart_ma.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+    chart_ma.set_global_opts(
+        xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts
+    )
     chart_k = chart_k.overlap(chart_ma)
 
     # 缠论结果
@@ -452,7 +468,9 @@ def kline_pro(
             ),
         )
 
-        chart_fx.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+        chart_fx.set_global_opts(
+            xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts
+        )
         chart_k = chart_k.overlap(chart_fx)
 
     if bi:
@@ -472,7 +490,9 @@ def kline_pro(
             linestyle_opts=opts.LineStyleOpts(width=1.5),
         )
 
-        chart_bi.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+        chart_bi.set_global_opts(
+            xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts
+        )
         chart_k = chart_k.overlap(chart_bi)
 
     if xd:
@@ -490,7 +510,9 @@ def kline_pro(
             ),
             linestyle_opts=opts.LineStyleOpts(width=3.5),
         )
-        chart_xd.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+        chart_xd.set_global_opts(
+            xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts
+        )
         chart_k = chart_k.overlap(chart_xd)
 
     if xd2:
@@ -508,7 +530,9 @@ def kline_pro(
             ),
             linestyle_opts=opts.LineStyleOpts(width=4.5),
         )
-        chart_xd.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+        chart_xd.set_global_opts(
+            xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts
+        )
         chart_k = chart_k.overlap(chart_xd2)
 
     if mergers:
@@ -530,7 +554,9 @@ def kline_pro(
                 ),
                 linestyle_opts=opts.LineStyleOpts(width=3.5),
             )
-            chart_merger.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+            chart_merger.set_global_opts(
+                xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts
+            )
             chart_k = chart_k.overlap(chart_merger)
 
     if bs:
@@ -549,7 +575,9 @@ def kline_pro(
                 ),
             )
 
-            chart_b.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+            chart_b.set_global_opts(
+                xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts
+            )
             chart_k = chart_k.overlap(chart_b)
 
         s_dts = [x["dt"] for x in bs if x["mark"] == "sell"]
@@ -567,7 +595,9 @@ def kline_pro(
                 ),
             )
 
-            chart_s.set_global_opts(xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts)
+            chart_s.set_global_opts(
+                xaxis_opts=grid0_xaxis_opts, legend_opts=legend_not_show_opts
+            )
             chart_k = chart_k.overlap(chart_s)
 
     if bzs:
@@ -661,9 +691,15 @@ def kline_pro(
 
     chart_macd = chart_macd.overlap(line)
 
-    grid0_opts = opts.GridOpts(pos_left="0%", pos_right="1%", pos_top="12%", height="58%")
-    grid1_opts = opts.GridOpts(pos_left="0%", pos_right="1%", pos_top="74%", height="8%")
-    grid2_opts = opts.GridOpts(pos_left="0%", pos_right="1%", pos_top="86%", height="10%")
+    grid0_opts = opts.GridOpts(
+        pos_left="0%", pos_right="1%", pos_top="12%", height="58%"
+    )
+    grid1_opts = opts.GridOpts(
+        pos_left="0%", pos_right="1%", pos_top="74%", height="8%"
+    )
+    grid2_opts = opts.GridOpts(
+        pos_left="0%", pos_right="1%", pos_top="86%", height="10%"
+    )
 
     grid_chart = Grid(init_opts)
     grid_chart.add(chart_k, grid_opts=grid0_opts)
@@ -672,7 +708,9 @@ def kline_pro(
     return grid_chart
 
 
-def box_plot(data: dict, title: str = "箱线图", width: str = "900px", height: str = "680px") -> Boxplot:
+def box_plot(
+    data: dict, title: str = "箱线图", width: str = "900px", height: str = "680px"
+) -> Boxplot:
     """
 
     :param data: 数据
@@ -710,7 +748,9 @@ def box_plot(data: dict, title: str = "箱线图", width: str = "900px", height:
         yaxis_opts=opts.AxisOpts(
             type_="value",
             name="",
-            splitarea_opts=opts.SplitAreaOpts(is_show=True, areastyle_opts=opts.AreaStyleOpts(opacity=1)),
+            splitarea_opts=opts.SplitAreaOpts(
+                is_show=True, areastyle_opts=opts.AreaStyleOpts(opacity=1)
+            ),
         ),
     )
     return chart
