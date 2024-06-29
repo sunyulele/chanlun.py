@@ -2786,6 +2786,7 @@ class BaseAnalyzer:
         NewBar.OBJS = []
         FenXing.OBJS = []
         Bi.OBJS = []
+        Bi.FAKE = None
         Duan.OBJS = []
         ZhongShu.OBJS = []
         ZhongShu.BI_OBJS = []
@@ -3269,6 +3270,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     NewBar.OBJS = []
                     FenXing.OBJS = []
                     Bi.OBJS = []
+                    Bi.FAKE = None
                     Duan.OBJS = []
                     ZhongShu.OBJS = []
                     ZhongShu.BI_OBJS = []
