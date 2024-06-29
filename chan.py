@@ -1277,7 +1277,7 @@ class Bi(BaseChanObject, Observer):
         if _from == "analyzer":
             bi.notify_observer(cmd=Bi.CMD_APPEND, obj=bi)
             ZhongShu.analyzer_push(bi, ZhongShu.BI_OBJS, Bi.OBJS, 0, _from)
-            Duan.analyzer_append(bi, Duan.OBJS)
+            Duan.analyzer_append(bi, Duan.OBJS, 0, _from)
 
     @staticmethod
     def pop(bis, fx, _from):
@@ -1288,7 +1288,7 @@ class Bi(BaseChanObject, Observer):
                 if _from == "analyzer":
                     bi.notify_observer(cmd=Bi.CMD_REMOVE, obj=bi)
                     ZhongShu.analyzer_pop(bi, ZhongShu.BI_OBJS, 0, _from)
-                    Duan.analyzer_pop(bi, Duan.OBJS)
+                    Duan.analyzer_pop(bi, Duan.OBJS, 0, _from)
                 return bi
             else:
                 raise ValueError("最后一笔终点错误", fx, bis[-1].end)
@@ -2056,7 +2056,7 @@ class Duan(BaseChanObject, Observer):
         return elements
 
     @staticmethod
-    def append(xds, duan, _from="analyzer"):
+    def append(xds, duan, _from):
         if xds and xds[-1].end is not duan.start:
             raise TypeError("线段连续性错误")
         i = 0
@@ -2072,7 +2072,7 @@ class Duan(BaseChanObject, Observer):
         ZhongShu.analyzer_push(duan, ZhongShu.DUAN_OBJS, Duan.OBJS, 0, _from)
 
     @staticmethod
-    def pop(xds, duan, _from="analyzer"):
+    def pop(xds, duan, _from):
         if xds:
             if xds[-1] is duan:
                 duan = xds.pop()
@@ -2084,7 +2084,7 @@ class Duan(BaseChanObject, Observer):
                 raise ValueError
 
     @staticmethod
-    def analyzer_pop(bi, xds: List["Duan"], level=0):
+    def analyzer_pop(bi, xds: List["Duan"], level, _from):
         ddp()
         cmd = "Duans.POP"
         duan: Duan = xds[-1]
@@ -2104,7 +2104,7 @@ class Duan(BaseChanObject, Observer):
             if (last.right and bi in last.right) or (
                 last.right is None and bi in last.left
             ):
-                Duan.pop(xds, duan)
+                Duan.pop(xds, duan, _from)
                 last.pop_element(bi)
                 # last.features = [last.left, last.mid, None]
                 last.right = None
@@ -2113,15 +2113,15 @@ class Duan(BaseChanObject, Observer):
         if duan.elements:
             duan.left, duan.mid, duan.right = duan.get_features()
         else:
-            Duan.pop(xds, duan)
+            Duan.pop(xds, duan, _from)
         return
 
     @staticmethod
-    def analyzer_append(bi: Bi, xds: list["Duan"], level: int = 0):
+    def analyzer_append(bi: Bi, xds: list["Duan"], level: int, _from: str):
         cmd = "Duans.PUSH"
         new = Duan(None, bi.start, bi.end, [bi])
         if not xds:
-            Duan.append(xds, new)
+            Duan.append(xds, new, _from)
             return
         duan: Duan = xds[-1]
         state: States = duan.state
@@ -2161,8 +2161,8 @@ class Duan(BaseChanObject, Observer):
                 and len(duan.elements) == 1
             ):
                 new = new = Duan(None, bi.start, bi.end, [bi])
-                Duan.pop(xds, duan)
-                Duan.append(xds, new, None)
+                Duan.pop(xds, duan, _from)
+                Duan.append(xds, new, _from)
                 return
             if (
                 (duan.direction is Direction.Down)
@@ -2170,8 +2170,8 @@ class Duan(BaseChanObject, Observer):
                 and len(duan.elements) == 1
             ):
                 new = new = Duan(None, bi.start, bi.end, [bi])
-                Duan.pop(xds, duan)
-                Duan.append(xds, new, None)
+                Duan.pop(xds, duan, _from)
+                Duan.append(xds, new, _from)
                 return
 
         duan.append_element(bi)
@@ -2179,7 +2179,7 @@ class Duan(BaseChanObject, Observer):
         if r:
             elements = duan.set_done(m.start)
             new = Duan(duan, elements[0].start, elements[-1].end, elements)
-            Duan.append(xds, new)
+            Duan.append(xds, new, _from)
             new.left, new.mid, new.right = new.get_features()
             if duan.direction is Direction.Up:
                 fx = "顶分型"
@@ -2252,10 +2252,10 @@ class ZhongShu(BaseChanObject, Observer):
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
         obj = kwords.get("obj")
-        print(cmd)
         if cmd == f"{self.__class__.__name__}_{BaseChanObject.CMD_DONE}":
             self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
             return
+
         if cmd == f"{Duan.__class__.__name__}_{BaseChanObject.CMD_DONE}":
             self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
             return
@@ -2263,6 +2263,7 @@ class ZhongShu(BaseChanObject, Observer):
         if cmd == Duan.CDM_ZS_OBSERVER:
             self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
             return
+
         if cmd == Duan.CMD_MODIFY:  # 线段end改变事件
             if obj is self.third:
                 if double_relation(self, self.third) in (
@@ -2716,6 +2717,65 @@ class ZouShi(BaseChanObject, Observer):
         super().update(observable, **kwords)
 
 
+class KlineGenerator:
+    def __init__(self, arr=[3, 2, 5, 3, 7, 4, 7, 2.5, 5, 4, 8, 6]):
+        self.dt = datetime(2021, 9, 3, 19, 50, 40, 916152)
+        self.arr = arr
+
+    def up(self, start, end, size=8):
+        n = 0
+        m = round(abs(start - end) * (1 / size), 8)
+        o = start
+        # c = round(o + m, 4)
+
+        while n < size:
+            c = round(o + m, 4)
+            yield RawBar(self.dt, o, c, o, c, 1)
+            o = c
+            n += 1
+            self.dt = datetime.fromtimestamp(self.dt.timestamp() + 60 * 60)
+
+    def down(self, start, end, size=8):
+        n = 0
+        m = round(abs(start - end) * (1 / size), 8)
+        o = start
+        # c = round(o - m, 4)
+
+        while n < size:
+            c = round(o - m, 4)
+            yield RawBar(self.dt, o, o, c, c, 1)
+            o = c
+            n += 1
+            self.dt = datetime.fromtimestamp(self.dt.timestamp() + 60 * 60)
+
+    @property
+    def result(self):
+        size = len(self.arr)
+        i = 0
+        # sizes = [5 for i in range(l)]
+        result = []
+        while i + 1 < size:
+            s = self.arr[i]
+            e = self.arr[i + 1]
+            if s > e:
+                for k in self.down(s, e):
+                    result.append(k)
+            else:
+                for k in self.up(s, e):
+                    result.append(k)
+            i += 1
+        return result
+
+
+def gen(arr) -> "CZSCAnalyzer":
+    g = KlineGenerator(arr)
+
+    c = CZSCAnalyzer("test", 60, [])
+    for b in g.result:
+        c.push(b)
+    return c
+
+
 class BaseAnalyzer:
     def __init__(self, symbol: str, freq: int):
         self.__symbol = symbol
@@ -2984,15 +3044,76 @@ class CZSCAnalyzer:
             return cls.load_bytes(symbol, dat, int(freq))
 
 
-class CZSCSigal(bt.Indicator):
-    def __init__(self):
-        self.base_analyzer = CZSCAnalyzer(
-            "btcusd",
-            300,
-            [
-                300,
-            ],
-        )
+class Bitstamp(CZSCAnalyzer):
+    """ """
+
+    def __init__(self, symbol: str, freq: Union[Freq, int, str], size: int = 0):
+        if type(freq) is Freq:
+            super().__init__(symbol, freq.value)
+            self.freq: int = freq.value
+        elif type(freq) is int:
+            super().__init__(symbol, freq)
+            self.freq: int = freq
+        elif type(freq) is str:
+            super().__init__(symbol, int(freq))
+            self.freq: int = int(freq)
+        else:
+            raise
+
+    def init(self, size):
+        self.left_date_timestamp: int = int(datetime.now().timestamp() * 1000)
+        left = int(self.left_date_timestamp / 1000) - self.freq * size
+        if left < 0:
+            raise ChanException
+        _next = left
+        while 1:
+            data = self.ohlc(
+                self.symbol, self.freq, _next, _next := _next + self.freq * 1000
+            )
+            if not data.get("data"):
+                print(data)
+                raise ChanException
+            for bar in data["data"]["ohlc"]:
+                try:
+                    self.step(
+                        bar["timestamp"],
+                        bar["open"],
+                        bar["high"],
+                        bar["low"],
+                        bar["close"],
+                        bar["volume"],
+                    )
+                except ChanException as e:
+                    # continue
+                    self.save_file()
+                    raise e
+
+            # start = int(data["data"]["ohlc"][0]["timestamp"])
+            end = int(data["data"]["ohlc"][-1]["timestamp"])
+
+            _next = end
+            if len(data["data"]["ohlc"]) < 100:
+                break
+            if Observer.CAN and Observer.thread is None:
+                break
+
+    @staticmethod
+    def ohlc(pair: str, step: int, start: int, end: int, length: int = 1000) -> Dict:
+        proxies = {
+            "http": "http://127.0.0.1:11809",
+            "https": "http://127.0.0.1:11809",
+        }
+        s = requests.Session()
+
+        s.headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36",
+            "content-type": "application/json",
+        }
+        url = f"https://www.bitstamp.net/api/v2/ohlc/{pair}/?step={step}&limit={length}&start={start}&end={end}"
+        resp = s.get(url, timeout=5, proxies=proxies)
+        json = resp.json()
+        # print(json)
+        return json
 
 
 class CZSCStrategy(bt.Strategy):  # BOLL策略程序
@@ -3095,6 +3216,13 @@ def main_load_file1(path: str = "btcusd-300-1713295800-1715695500.dat"):
     return obj
 
 
+def main_bitstamp():
+    bitstamp = Bitstamp("btcusd", freq=Freq.m5)
+    bitstamp.init(2000)
+    bitstamp.toCharts()
+    return bitstamp
+
+
 app = FastAPI()
 # priority_queue = asyncio.PriorityQueue()
 # queue = Observer.queue  # asyncio.Queue()
@@ -3147,9 +3275,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     ZhongShu.DUAN_OBJS = []
                     tmp.join(1)
                     time.sleep(1)
-                Observer.thread = Thread(
-                    target=main_load_file1
-                )  # 使用线程来运行main函数
+                Observer.thread = Thread(target=main_bitstamp)  # 使用线程来运行main函数
                 Observer.thread.start()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -3714,4 +3840,3 @@ if __name__ == "__main__":
         print("期末总资金: %.2f" % end_value)
         cerebro.plot()
         print(len(Observer.sigals))
-        # 巨亏～
