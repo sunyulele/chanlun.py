@@ -5,3 +5,4 @@ numpy
 uvicorn
 fastapi
 websockets
+backtrader==1.9.78.123
