@@ -4,7 +4,7 @@
 
 * 实现基本 笔 段 中枢 的识别 以及Tradingview前端
 ```bash
-uvicorn czsc:app --reload --port 8080
+uvicorn chan:app --reload --port 8080
 ```
 
 #### ⛱️ 预览
