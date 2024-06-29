@@ -35,6 +35,9 @@ from enum import Enum
 from abc import ABCMeta, abstractmethod, ABC
 
 import requests
+import backtrader as bt
+import pandas as pd
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +49,25 @@ from termcolor import colored
 ts2int = lambda timestamp_str: int(
     time.mktime(datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S").timetuple())
 )
+int2ts = lambda timestamp: time.strftime(
+    "%Y-%m-%d %H:%M:%S", time.localtime(int(timestamp))
+)
+
+
+def bs2df(bs: bytes) -> pd.DataFrame:
+    size = struct.calcsize(">6d")
+    tmp = []
+    while bs:
+        timestamp, open, high, low, close, vol = struct.unpack(
+            ">6d", bs[: struct.calcsize(">6d")]
+        )
+        tmp.append((int2ts(timestamp), open, high, low, close, vol))
+        bs = bs[size:]
+    df = pd.DataFrame(
+        tmp, columns=["timestamp", "open", "high", "low", "close", "volume"]
+    )
+    df.index = pd.to_datetime(df.timestamp)
+    return df
 
 
 class Shape(Enum):
@@ -100,19 +122,32 @@ class Freq(Enum):
     D3: int = 60 * 60 * 24 * 3  # 259200
 
 
+class BSPoint(Enum):
+    """买卖点"""
+
+    FS = "一卖"
+    FB = "一买"
+
+    SS = "二卖"
+    SB = "二买"
+
+    TS = "三卖"
+    TB = "三买"
+
+
 class ChanException(Exception):
     """exception"""
 
     ...
 
 
-States = Literal["老阳", "少阴", "老阴", "少阳"]
+States = Literal["老阳", "少阴", "老阴", "小阳"]
 
 
 def _print(*args, **kwords):
     result = []
     for i in args:
-        if i in ("少阳", True, Shape.D, "底分型") or "少阳" in str(i):
+        if i in ("小阳", True, Shape.D, "底分型") or "小阳" in str(i):
             result.append(colored(i, "green"))
 
         elif i in ("老阳", False, Shape.G, "顶分型") or "老阳" in str(i):
@@ -305,6 +340,10 @@ def triple_scope(left, mid, right) -> tuple[bool, Optional["Pillar"]]:
     return False, None
 
 
+def calc_bc(left: List, right: List) -> bool:
+    return sum([o.macd for o in left]) > sum([o.macd for o in right])
+
+
 class Observer(metaclass=ABCMeta):
     """观察者的基类"""
 
@@ -312,20 +351,83 @@ class Observer(metaclass=ABCMeta):
     TIME = 0.05
     queue = asyncio.Queue()
     loop = asyncio.get_event_loop()
+    sigals = set()
+    sigal = None  # 最新信号
+    thread = None
 
     @abstractmethod
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
-        if cmd == "remove":
-            assert self._removed is False
+        if cmd in (
+            Bi.CMD_REMOVE,
+            Duan.CMD_REMOVE,
+            ZhongShu.CMD_REMOVE,
+            FeatureSequence.CMD_REMOVE,
+        ):
+            assert self._removed is False, self
+            assert self._appended is True, self
             self._removed = True
             del observable
 
-        if cmd == "append":
+        if cmd in (
+            Bi.CMD_APPEND,
+            Duan.CMD_APPEND,
+            ZhongShu.CMD_APPEND,
+            FeatureSequence.CMD_APPEND,
+        ):
             assert self._appended is False
             self._appended = True
-        if cmd == "modify":
+        if cmd in (
+            Bi.CMD_MODIFY,
+            Duan.CMD_MODIFY,
+            ZhongShu.CMD_MODIFY,
+            FeatureSequence.CMD_MODIFY,
+        ):
             assert self._appended is True, self
+
+    @classmethod
+    def plot_bsp(cls, _type, bar: "NewBar", bsp: BSPoint):
+        if cls.CAN:
+            offset = NewBar.OBJS[-1].index - bar.index
+            points = [
+                {"time": int(bar.dt.timestamp()), "price": bar.speck},
+            ]
+            if (_type, bar, bsp) in Observer.sigals:
+                Observer.sigal = None
+                return
+            # print("plot_bsp", bar, bsp, RawBar.OBJS[-1].dt)
+
+            if bar.shape is Shape.G:
+                options = {
+                    "shape": "arrow_down",
+                    "text": f"{_type}{bsp.value}{offset}",
+                }
+                properties = {"title": f"{_type}{bsp.name}"}
+            else:
+                options = {
+                    "shape": "arrow_up",
+                    "text": f"{_type}{bsp.value}{offset}",
+                }
+                properties = {"title": f"{_type}{bsp.name}"}
+            message = {
+                "type": "shape",
+                "cmd": ZhongShu.CMD_APPEND,
+                "name": options["shape"],
+                "id": bar.shape_id,
+                "points": points,
+                "options": options,
+                "properties": properties,
+            }
+            future = asyncio.run_coroutine_threadsafe(
+                Observer.queue.put(message), Observer.loop
+            )
+
+            try:
+                future.result()  # 确保任务已添加到队列
+            except Exception as e:
+                print(f"Error adding task to queue: {e}")
+        Observer.sigals.add((_type, bar, bsp))
+        Observer.sigal = (_type, bar, bsp)
 
 
 class Observable(object):
@@ -338,16 +440,22 @@ class Observable(object):
         self._removed = False
         self._appended = False
 
+    # 清空观察者
+    def clear_observer(self):
+        self.__observers.clear()
+
     # 添加观察者
-    def attach(self, observer: Observer):
+    def attach_observer(self, observer: Observer):
         self.__observers.append(observer)
 
     # 删除观察者
-    def detach(self, observer: Observer):
+    def detach_observer(self, observer: Observer):
         self.__observers.remove(observer)
 
     # 内容或状态变化时通知所有的观察者
-    def notify(self, **kwords):
+    def notify_observer(self, **kwords):
+        assert kwords.get("obj") is not None
+        assert kwords.get("obj") is self
         if Observer.CAN:
             for o in self.__observers:
                 o.update(self, **kwords)
@@ -436,7 +544,9 @@ class BaseChanObject(Observable):
     @done.setter
     def done(self, value: bool):
         self.__done = value
-        self.notify(cmd=BaseChanObject.CMD_DONE, obj=self)
+        self.notify_observer(
+            cmd=f"{self.__class__.__name__}_{BaseChanObject.CMD_DONE}", obj=self
+        )
 
     @property
     def macd(self) -> float:
@@ -504,18 +614,32 @@ class RawBar(BaseChanObject, Observer):
 
         self.elements = None
         RawBar.OBJS.append(self)
-        self.attach(self)
-        self.notify(cmd=RawBar.CMD_APPEND)
+        self.attach_observer(self)
+        self.notify_observer(cmd=RawBar.CMD_APPEND, obj=self)
+
+    def __eq__(self, other):
+        if (
+            isinstance(other, RawBar)
+            and self.index == other.index
+            and self.open == other.open
+            and self.high == other.high
+            and self.low == other.low
+            and self.close == other.close
+            and self.volume == other.volume
+            and self.dt.timestamp() == other.dt.timestamp()
+        ):
+            return True
+        return False
 
     def __str__(self):
-        return f"{self.__class__.__name__}({self.dt}, {self.high}, {self.low})"
+        return f"{self.__class__.__name__}({self.dt}, {self.high}, {self.low}, index={self.index})"
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.dt}, {self.high}, {self.low})"
+        return f"{self.__class__.__name__}({self.dt}, {self.high}, {self.low}, index={self.index})"
 
     def update(self, observer: "Observer", **kwords: Any):
         cmd = kwords.get("cmd")
-        return
+        # return
 
         if cmd in (RawBar.CMD_APPEND,):
             message = {
@@ -593,6 +717,9 @@ class NewBar(BaseChanObject, Observer):
     缠论 K线
     """
 
+    KEY_BI_ZS_ID = "KEY_BI_ZS_ID"
+    KEY_DUAN_ID = "KEY_DUAN_ID"
+
     CMD_APPEND = "append"
 
     OBJS: List["NewBar"] = []
@@ -604,8 +731,7 @@ class NewBar(BaseChanObject, Observer):
         "speck",
         "dt",
         "direction",
-        "_bi_noo",
-        "_duan_noo",
+        "bsp",
     )
 
     def __init__(
@@ -643,13 +769,14 @@ class NewBar(BaseChanObject, Observer):
                 else Direction.Down
             )
         NewBar.OBJS.append(self)
-        self.attach(self)
-        self.notify(cmd=NewBar.CMD_APPEND)
-        self._bi_noo = 0  # 笔操作次数
-        self._duan_noo = 0  # 线段操作次数
+        self.attach_observer(self)
+        self.notify_observer(cmd=NewBar.CMD_APPEND, obj=self)
+
+        self.bsp: List[BSPoint] = []
 
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
+        return
         # https://www.tradingview.com/charting-library-docs/v26/api/interfaces/Charting_Library.CreateShapeOptions/
         point = {"time": int(self.dt.timestamp())}
         options = {
@@ -707,10 +834,10 @@ class NewBar(BaseChanObject, Observer):
         return FenXing(left, mid, right)
 
     def __str__(self):
-        return f"{self.__class__.__name__}({self.index}, {self.dt}, {self.high}, {self.low}, {self.shape})"
+        return f"{self.__class__.__name__}({self.index}, {self.dt}, {self.high}, {self.low}, {self.shape}, {len(self.elements)})"
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.index}, {self.dt}, {self.high}, {self.low}, {self.shape})"
+        return f"{self.__class__.__name__}({self.index}, {self.dt}, {self.high}, {self.low}, {self.shape}, {len(self.elements)})"
 
     def _to_raw_bar(self) -> RawBar:
         return RawBar(
@@ -723,13 +850,17 @@ class NewBar(BaseChanObject, Observer):
             i=self.index,
         )
 
-    def merge(self, next_raw_bar: "RawBar") -> Optional["NewBar"]:
+    def merge(self, next_raw_bar: RawBar) -> Optional["NewBar"]:
         """
         去除包含关系
         :param next_raw_bar :
         :return: 存在包含关系返回 None, 否则返回下一个 NewBar
         """
-        assert next_raw_bar.index - 1 == self.elements[-1].index
+        assert next_raw_bar.index - 1 == self.elements[-1].index, (
+            next_raw_bar,
+            self.elements[-1].index,
+            self,
+        )
         relation = double_relation(self, next_raw_bar)
         if relation in (Direction.Left, Direction.Right):
             # 合并
@@ -741,7 +872,7 @@ class NewBar(BaseChanObject, Observer):
                 self.low = min(self.low, next_raw_bar.low)
 
             assert next_raw_bar.index - 1 == self.elements[-1].index
-            self.notify(cmd=NewBar.CMD_APPEND)
+            self.notify_observer(cmd=NewBar.CMD_APPEND, obj=self)
 
             self.elements.append(next_raw_bar)
             return None
@@ -859,9 +990,9 @@ class Bi(BaseChanObject, Observer):
     BI_LENGTH = 5  # 成BI最低长度
     BI_JUMP = True  # 跳空是否是一个NewBar
     BI_FENGXING = False  # True: 一笔起始分型高低包含整支笔对象则不成笔, False: 只判断分型中间数据是否包含
-    CMD_APPEND = "append"
-    CMD_MODIFY = "modify"
-    CMD_REMOVE = "remove"
+    CMD_APPEND = "bi_append"
+    CMD_MODIFY = "bi_modify"
+    CMD_REMOVE = "bi_remove"
 
     __slots__ = "direction", "__start", "__end", "flag"
 
@@ -904,16 +1035,16 @@ class Bi(BaseChanObject, Observer):
             )"""
         self.flag = flag
 
-        self.attach(self)  # 自我观察
+        self.attach_observer(self)  # 自我观察
         if self.flag:
             Bi.OBJS.append(self)
-            self.notify(cmd=Bi.CMD_APPEND)
+            self.notify_observer(cmd=Bi.CMD_APPEND, obj=self)
 
     def __str__(self):
-        return f"Bi({self.direction}, {colored(self.start.dt, 'green')}, {self.start.speck}, {colored(self.end.dt, 'green')}, {self.end.speck}, {self.index}, {self.elements[-1]})"
+        return f"Bi({self.direction}, {colored(self.start.dt, 'green')}, {self.start.speck}, {colored(self.end.dt, 'green')}, {self.end.speck}, {self.index}, {self.elements[-1]}, fake: {self is Bi.FAKE})"
 
     def __repr__(self):
-        return f"Bi({self.direction}, {colored(self.start.dt, 'green')}, {self.start.speck}, {colored(self.end.dt, 'green')}, {self.end.speck}, {self.index}, {self.elements[-1]})"
+        return f"Bi({self.direction}, {colored(self.start.dt, 'green')}, {self.start.speck}, {colored(self.end.dt, 'green')}, {self.end.speck}, {self.index}, {self.elements[-1]}, fake: {self is Bi.FAKE})"
 
     def update(self, observable: "Observable", **kwords: Any):
         # 实现 自我观察
@@ -975,7 +1106,7 @@ class Bi(BaseChanObject, Observer):
         :return:
         """
         if start is None:
-            self.notify(cmd=Bi.CMD_REMOVE)
+            self.notify_observer(cmd=Bi.CMD_REMOVE, obj=self)
             self.__start = start
             self.elements = None
             assert Bi.OBJS[-1] is self, Bi.OBJS[-1]
@@ -995,9 +1126,9 @@ class Bi(BaseChanObject, Observer):
 
         if self not in Bi.OBJS:
             Bi.OBJS.append(self)
-            self.notify(cmd=Bi.CMD_APPEND)
+            self.notify_observer(cmd=Bi.CMD_APPEND, obj=self)
         else:
-            self.notify(cmd=Bi.CMD_MODIFY)
+            self.notify_observer(cmd=Bi.CMD_MODIFY, obj=self)
 
     @property
     def end(self) -> FenXing:
@@ -1017,7 +1148,7 @@ class Bi(BaseChanObject, Observer):
                 tag = False
             self.high = max(self.high, end.high)
         if tag:
-            self.notify(cmd=Bi.CMD_MODIFY)
+            self.notify_observer(cmd=Bi.CMD_MODIFY, obj=self)
 
     @property
     def real_high(self) -> NewBar:
@@ -1073,7 +1204,7 @@ class Bi(BaseChanObject, Observer):
             if old > new_bar.low:
                 self.__end = new_bar
             self.low = min(self.low, new_bar.low)
-            self.notify(cmd=Bi.CMD_MODIFY)
+            self.notify_observer(cmd=Bi.CMD_MODIFY, obj=self)
             if self.real_high is not self.start.mid:
                 dp("不是真顶", self)
 
@@ -1082,9 +1213,16 @@ class Bi(BaseChanObject, Observer):
             if old < new_bar.high:
                 self.__end = new_bar
             self.high = max(self.high, new_bar.high)
-            self.notify(cmd=Bi.CMD_MODIFY)
+            self.notify_observer(cmd=Bi.CMD_MODIFY, obj=self)
             if self.real_low is not self.start.mid:
                 dp("不是真底", self)
+
+    def get_bsp(self) -> List[NewBar]:
+        bsp = []
+        for bar in self.elements:
+            if bar.bsp:
+                bsp.append(bar)
+        return bsp
 
     def check(self) -> bool:
         if len(self.elements) >= 5:
@@ -1108,7 +1246,7 @@ class Bi(BaseChanObject, Observer):
     def calc_fake(cls):
         last = cls.FAKE
         if last is not None:
-            last.notify(cmd=Bi.CMD_REMOVE)
+            last.notify_observer(cmd=Bi.CMD_REMOVE, obj=last)
 
         if FenXing.OBJS:
             start = FenXing.OBJS[-1]
@@ -1121,7 +1259,7 @@ class Bi(BaseChanObject, Observer):
             else:
                 bi = Bi(pre, start, high, elememts, flag=False)
             cls.FAKE = bi
-            bi.notify(cmd=Bi.CMD_APPEND)
+            bi.notify_observer(cmd=Bi.CMD_APPEND, obj=bi)
 
     @staticmethod
     def append(bis, bi, _from):
@@ -1137,9 +1275,8 @@ class Bi(BaseChanObject, Observer):
         bi.done = True
         bis.append(bi)
         if _from == "analyzer":
-            bi.notify(cmd=Bi.CMD_APPEND)
-            ZhongShu._bi_analyzer()
-            # ZhongShu.analyzer_push(bi, ZhongShu.BI_OBJS, Bi.OBJS, 0)
+            bi.notify_observer(cmd=Bi.CMD_APPEND, obj=bi)
+            ZhongShu.analyzer_push(bi, ZhongShu.BI_OBJS, Bi.OBJS, 0, _from)
             Duan.analyzer_append(bi, Duan.OBJS)
 
     @staticmethod
@@ -1149,11 +1286,9 @@ class Bi(BaseChanObject, Observer):
                 bi = bis.pop()
                 bi.done = False
                 if _from == "analyzer":
-                    bi.notify(cmd=Bi.CMD_REMOVE)
-                    ZhongShu._bi_analyzer()
-                    # ZhongShu.analyzer_pop(bi, ZhongShu.BI_OBJS, 0, _from)
+                    bi.notify_observer(cmd=Bi.CMD_REMOVE, obj=bi)
+                    ZhongShu.analyzer_pop(bi, ZhongShu.BI_OBJS, 0, _from)
                     Duan.analyzer_pop(bi, Duan.OBJS)
-                    NewBar.OBJS[-1]._bi_noo += 1
                 return bi
             else:
                 raise ValueError("最后一笔终点错误", fx, bis[-1].end)
@@ -1169,7 +1304,7 @@ class Bi(BaseChanObject, Observer):
         last = fxs[-1] if fxs else None
         left, mid, right = fx.left, fx.mid, fx.right
         if Bi.FAKE:
-            Bi.FAKE.notify(cmd=Bi.CMD_REMOVE)
+            Bi.FAKE.notify_observer(cmd=Bi.CMD_REMOVE, obj=Bi.FAKE)
             Bi.FAKE = None
         if last is None:
             if mid.shape in (Shape.G, Shape.D):
@@ -1220,13 +1355,12 @@ class Bi(BaseChanObject, Observer):
                             cklines[fxs[-3].mid.index : _bi.start.mid.index + 1],
                             flag=False,
                         )
-                        _bi.notify(cmd=Bi.CMD_REMOVE)
                         if not nb.check():
                             return
                         print(_bi)
                         tmp = fxs.pop()
                         assert tmp is last
-                        bi = Bi.pop(bis, tmp, _from)
+                        Bi.pop(bis, tmp, _from)
                         Bi.analyzer(_bi.start, fxs, bis, cklines, _from)
 
             else:
@@ -1277,7 +1411,6 @@ class Bi(BaseChanObject, Observer):
                             cklines[fxs[-3].mid.index : _bi.start.mid.index + 1],
                             False,
                         )
-                        _bi.notify(cmd=Bi.CMD_REMOVE)
                         if not nb.check():
                             return
                         print(_bi)
@@ -1461,6 +1594,9 @@ class Bi(BaseChanObject, Observer):
 
 class FeatureSequence(Observable, Observer):
     CAN = True
+    CMD_APPEND = "feature_append"
+    CMD_MODIFY = "feature_modify"
+    CMD_REMOVE = "feature_remove"
 
     def __init__(self, elements: set, direction: Direction):
         super().__init__()
@@ -1469,9 +1605,9 @@ class FeatureSequence(Observable, Observer):
         self.direction: Direction = direction  # 线段方向
         self.shape: Optional[Shape] = None
         self.index = 0
-        self.attach(self)
-        self.__appended = False
-        self.__removed = False
+        self.attach_observer(self)
+        # self.__appended = False
+        # self.__removed = False
 
     @property
     def shape_id(self) -> str:
@@ -1482,7 +1618,7 @@ class FeatureSequence(Observable, Observer):
         self.direction = other.direction
         self.shape = other.shape
         self.index = other.index
-        self.notify(cmd=Bi.CMD_MODIFY)
+        self.notify_observer(cmd=FeatureSequence.CMD_MODIFY, obj=self)
         return self
 
     def update(self, observable: "Observable", **kwords: Any):
@@ -1528,7 +1664,11 @@ class FeatureSequence(Observable, Observer):
             "properties": properties,
         }
 
-        if cmd in (Bi.CMD_APPEND, Bi.CMD_REMOVE, Bi.CMD_MODIFY):
+        if cmd in (
+            FeatureSequence.CMD_APPEND,
+            FeatureSequence.CMD_REMOVE,
+            FeatureSequence.CMD_MODIFY,
+        ):
             # 后端实现 增 删 改
             future = asyncio.run_coroutine_threadsafe(
                 Observer.queue.put(message), Observer.loop
@@ -1561,7 +1701,7 @@ class FeatureSequence(Observable, Observer):
             raise ChanException("方向不匹配", direction, obj, self)
         self.__elements.add(obj)
         if _from == "analyzer":
-            self.notify(cmd=Bi.CMD_MODIFY)
+            self.notify_observer(cmd=FeatureSequence.CMD_MODIFY, obj=self)
 
     def remove(self, obj: Union[Bi, "Duan"], _from):
         direction = Direction.Down if self.direction is Direction.Up else Direction.Up
@@ -1574,10 +1714,10 @@ class FeatureSequence(Observable, Observer):
             raise e
         if self.__elements:
             if _from == "analyzer":
-                self.notify(cmd=Bi.CMD_MODIFY)
+                self.notify_observer(cmd=FeatureSequence.CMD_MODIFY, obj=self)
         else:
             if _from == "analyzer":
-                self.notify(cmd=Bi.CMD_REMOVE)
+                self.notify_observer(cmd=FeatureSequence.CMD_REMOVE, obj=self)
 
     @property
     def start(self) -> FenXing:
@@ -1614,7 +1754,7 @@ class FeatureSequence(Observable, Observer):
         return min([self.end, self.start], key=lambda fx: fx.speck).speck
 
     @staticmethod
-    def analysis(bis: list, direction: Direction, _from):
+    def analyzer(bis: list, direction: Direction, _from):
         result: List[FeatureSequence] = []
         for obj in bis:
             if obj.direction is direction:
@@ -1649,9 +1789,10 @@ class FeatureSequence(Observable, Observer):
 class Duan(BaseChanObject, Observer):
     OBJS: List["Duan"] = []
     FAKE = None
-    CMD_APPEND = "append"
-    CMD_MODIFY = "modify"
-    CMD_REMOVE = "remove"
+    CMD_APPEND = "duan_append"
+    CMD_MODIFY = "duan_modify"
+    CMD_REMOVE = "duan_remove"
+    CDM_ZS_OBSERVER = "CDM_ZS_OBSERVER"
 
     # __slots__ =
     def __init__(
@@ -1687,7 +1828,7 @@ class Duan(BaseChanObject, Observer):
         self.elements = elements
         self.jump: bool = False  # 特征序列是否有缺口
 
-        self.attach(self)
+        self.attach_observer(self)
 
     def update(self, observable: "Observable", **kwords: Any):
         # 实现 自我观察
@@ -1762,22 +1903,26 @@ class Duan(BaseChanObject, Observer):
             elif relation is Direction.JumpDown and self.direction is Direction.Down:
                 return "老阴"
             else:
-                return "少阳" if self.direction is Direction.Up else "少阴"
+                return "小阳" if self.direction is Direction.Up else "少阴"
         else:
-            return "少阳" if self.direction is Direction.Up else "少阴"
+            return "小阳" if self.direction is Direction.Up else "少阴"
 
     def __feature_setter(self, offset: int, feature: Optional[FeatureSequence]):
         if feature is None:
             if self._features[offset]:
-                self._features[offset].notify(cmd=Duan.CMD_REMOVE)
+                self._features[offset].notify_observer(
+                    cmd=FeatureSequence.CMD_REMOVE, obj=self._features[offset]
+                )
             self._features[offset] = feature
             return
         if self._features[offset] is None:
-            feature.notify(cmd=Duan.CMD_APPEND)
+            feature.notify_observer(cmd=FeatureSequence.CMD_APPEND, obj=feature)
             self._features[offset] = feature
         else:
             self._features[offset].copy(feature)
-            self._features[offset].notify(cmd=Duan.CMD_MODIFY)
+            self._features[offset].notify_observer(
+                cmd=FeatureSequence.CMD_MODIFY, obj=self._features[offset]
+            )
 
     @property
     def left(self) -> "FeatureSequence":
@@ -1829,7 +1974,7 @@ class Duan(BaseChanObject, Observer):
             self.low = end.speck
         else:
             raise
-        self.notify(cmd=Duan.CMD_MODIFY)
+        self.notify_observer(cmd=Duan.CMD_MODIFY, obj=self)
 
     def get_elements(self) -> Iterable[Bi]:
         elements = []
@@ -1867,7 +2012,7 @@ class Duan(BaseChanObject, Observer):
     ) -> Tuple[
         Optional[FeatureSequence], Optional[FeatureSequence], Optional[FeatureSequence]
     ]:
-        features = FeatureSequence.analysis(self.elements, self.direction, "tmp")
+        features = FeatureSequence.analyzer(self.elements, self.direction, "tmp")
         if len(features) == 0:
             return None, None, None
         if len(features) == 1:
@@ -1902,8 +2047,8 @@ class Duan(BaseChanObject, Observer):
                 elements.append(obj)
             if obj.start is fx:
                 elements.append(obj)
-        self.done = True
         self.end = fx
+        self.done = True  # 注意观察者！！
         self.jump = double_relation(self.left, self.mid) in (
             Direction.JumpUp,
             Direction.JumpDown,
@@ -1923,9 +2068,8 @@ class Duan(BaseChanObject, Observer):
         duan.pre = pre
         xds.append(duan)
         if _from == "analyzer":
-            duan.notify(cmd=Duan.CMD_APPEND)
-        # ZhongShu.analyzer_push(duan, ZhongShu.DUAN_OBJS, Duan.OBJS, 0, _from)
-        ZhongShu._duan_analyzer()
+            duan.notify_observer(cmd=Duan.CMD_APPEND, obj=duan)
+        ZhongShu.analyzer_push(duan, ZhongShu.DUAN_OBJS, Duan.OBJS, 0, _from)
 
     @staticmethod
     def pop(xds, duan, _from="analyzer"):
@@ -1933,9 +2077,8 @@ class Duan(BaseChanObject, Observer):
             if xds[-1] is duan:
                 duan = xds.pop()
                 if _from == "analyzer":
-                    duan.notify(cmd=Duan.CMD_REMOVE)
-                ZhongShu._duan_analyzer()
-                # ZhongShu.analyzer_pop(duan, ZhongShu.DUAN_OBJS, 0, _from)
+                    duan.notify_observer(cmd=Duan.CMD_REMOVE, obj=duan)
+                ZhongShu.analyzer_pop(duan, ZhongShu.DUAN_OBJS, 0, _from)
                 return duan
             else:
                 raise ValueError
@@ -2055,9 +2198,10 @@ class ZhongShu(BaseChanObject, Observer):
     DUAN_OBJS: List["ZhongShu"] = []
     TYPE: Tuple["str"] = ("Bi", "Duan", "ZouShi")
 
-    CMD_APPEND = "append"
-    CMD_MODIFY = "modify"
-    CMD_REMOVE = "remove"
+    CMD_APPEND = "zs_append"
+    CMD_MODIFY = "zs_modify"
+    CMD_REMOVE = "zs_remove"
+
     # __slots__ = "elements", "index", "level"
 
     def __init__(
@@ -2074,14 +2218,14 @@ class ZhongShu(BaseChanObject, Observer):
         if type(obj) is Duan:
             self.level = 2
         self.fake = None
-        self.attach(self)
+        self.attach_observer(self)
 
     def copy_zs(self, zs: "ZhongShu"):
         self.elements = zs.elements
         self.fake = zs.fake
         self.level = zs.level
         self.third = zs.third
-        self.type = zs._type
+        self._type = zs._type
         self.done = zs.done
         self.__direction = zs.direction
 
@@ -2107,27 +2251,72 @@ class ZhongShu(BaseChanObject, Observer):
 
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
+        obj = kwords.get("obj")
+        print(cmd)
+        if cmd == f"{self.__class__.__name__}_{BaseChanObject.CMD_DONE}":
+            self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
+            return
+        if cmd == f"{Duan.__class__.__name__}_{BaseChanObject.CMD_DONE}":
+            self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
+            return
+
+        if cmd == Duan.CDM_ZS_OBSERVER:
+            self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
+            return
+        if cmd == Duan.CMD_MODIFY:  # 线段end改变事件
+            if obj is self.third:
+                if double_relation(self, self.third) in (
+                    Direction.JumpUp,
+                    Direction.JumpDown,
+                ):
+                    return
+                self.elements.append(self.third)
+                self.third = None
+            else:
+                assert self.elements[-1] is obj
+                self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
+            return
         points = []
         if cmd == ZhongShu.CMD_REMOVE:
             points = []
         if cmd == ZhongShu.CMD_APPEND:
-            points = [
-                {"time": int(self.start.dt.timestamp()), "price": self.zg},
-                {
-                    "time": int(self.elements[-1].start.mid.dt.timestamp()),
-                    "price": self.zd,
-                },
-            ]
+            points = (
+                [
+                    {"time": int(self.start.dt.timestamp()), "price": self.zg},
+                    {
+                        "time": int(self.elements[-1].end.mid.dt.timestamp()),
+                        "price": self.zd,
+                    },
+                ]
+                if len(self.elements) <= 3
+                else [
+                    {"time": int(self.start.dt.timestamp()), "price": self.zg},
+                    {
+                        "time": int(self.elements[-1].start.mid.dt.timestamp()),
+                        "price": self.zd,
+                    },
+                ]
+            )
         if cmd == ZhongShu.CMD_MODIFY:
             if self.left is None:
                 return
-            points = [
-                {"time": int(self.start.dt.timestamp()), "price": self.zg},
-                {
-                    "time": int(self.elements[-1].start.mid.dt.timestamp()),
-                    "price": self.zd,
-                },
-            ]
+            points = (
+                [
+                    {"time": int(self.start.dt.timestamp()), "price": self.zg},
+                    {
+                        "time": int(self.elements[-1].end.mid.dt.timestamp()),
+                        "price": self.zd,
+                    },
+                ]
+                if len(self.elements) <= 3
+                else [
+                    {"time": int(self.start.dt.timestamp()), "price": self.zg},
+                    {
+                        "time": int(self.elements[-1].start.mid.dt.timestamp()),
+                        "price": self.zd,
+                    },
+                ]
+            )
 
         options = {
             "shape": "rectangle",
@@ -2151,7 +2340,7 @@ class ZhongShu(BaseChanObject, Observer):
             "bold": False,
             "italic": False,
             "extendLeft": False,
-            "extendRight": False,
+            "extendRight": not self.done,
             "visible": True,
             "frozen": False,
             "intervalsVisibilities": {
@@ -2192,6 +2381,7 @@ class ZhongShu(BaseChanObject, Observer):
 
         if cmd in (ZhongShu.CMD_APPEND, ZhongShu.CMD_REMOVE, ZhongShu.CMD_MODIFY):
             # 后端实现 增 删 改
+            # print(message)
             future = asyncio.run_coroutine_threadsafe(
                 Observer.queue.put(message), Observer.loop
             )
@@ -2208,43 +2398,14 @@ class ZhongShu(BaseChanObject, Observer):
     @third.setter
     def third(self, third):
         self.__third = third
-        if third is not None and Observer.CAN:
-            points = [
-                {"time": int(third.end.dt.timestamp()), "price": third.end.speck},
-            ]
-            if third.end.mid._appended is True:
-                return
-            third.end.mid._appended = True
-
+        if third is not None:
+            self.done = True
             if third.end.shape is Shape.G:
-                options = {
-                    "shape": "arrow_down",
-                    "text": f"{self._type}三卖",
-                }
-                properties = {"title": f"{self._type}三卖"}
+                Observer.plot_bsp(self._type, third.end.mid, BSPoint.TS)
             else:
-                options = {
-                    "shape": "arrow_up",
-                    "text": f"{self._type}三买",
-                }
-                properties = {"title": f"{self._type}三买"}
-            message = {
-                "type": "shape",
-                "cmd": ZhongShu.CMD_APPEND,
-                "name": "rectangle",
-                "id": third.end.mid.shape_id,
-                "points": points,
-                "options": options,
-                "properties": properties,
-            }
-            future = asyncio.run_coroutine_threadsafe(
-                Observer.queue.put(message), Observer.loop
-            )
-
-            try:
-                future.result()  # 确保任务已添加到队列
-            except Exception as e:
-                print(f"Error adding task to queue: {e}")
+                Observer.plot_bsp(self._type, third.end.mid, BSPoint.TB)
+        else:
+            self.done = False
 
     @property
     def left(self) -> Union[Bi, Duan, RawBar, NewBar]:
@@ -2320,13 +2481,58 @@ class ZhongShu(BaseChanObject, Observer):
             if self.last_element is not obj:
                 dp("警告：中枢元素不匹配!!!", self.last_element, obj)
             self.elements.pop()
+            # if _from == "analyzer" and self._type == "Duan":
+            #   self.notify_observer(cmd=ZhongShu.CMD_MODIFY)
         else:
             raise ChanException("中枢无法删除元素", self.last_element, obj)
 
     def append_element(self, obj: Union[Bi, Duan], _from):
         relation = double_relation(self, obj)
         if self.last_element.end is obj.start:
+            size = len(self.elements)
+
+            if size >= 3 and (size + 1) % 2 == 0:
+                """print(
+                    "计算买卖点",
+                    size,
+                    self._type,
+                    self.dd,
+                    self.gg,
+                    self.elements[1].direction,
+                    obj.direction,
+                )"""
+                enter = (
+                    Bi.OBJS[self.elements[0].index - 1]
+                    if self._type == "Bi"
+                    else Duan.OBJS[self.elements[0].index - 1]
+                )
+                if (
+                    self.elements[1].direction is Direction.Up
+                    and obj.direction is Direction.Up
+                ):
+                    # 卖
+                    # print("计算买卖点， 新高", enter.macd, obj.macd, enter, obj)
+                    if self.gg < obj.high:
+                        if calc_bc([enter], [obj]):
+                            # 背驰
+                            obj.end.mid.bsp.append(BSPoint.FS)
+                            Observer.plot_bsp(self._type, obj.end.mid, BSPoint.FS)
+
+                elif (
+                    self.elements[1].direction is Direction.Down
+                    and obj.direction is Direction.Down
+                ):
+                    # print("计算买卖点， 新低", enter.macd, obj.macd, enter, obj)
+                    # 买
+                    if self.dd > obj.low:
+                        if calc_bc([enter], [obj]):
+                            # 背驰
+                            obj.end.mid.bsp.append(BSPoint.FB)
+                            Observer.plot_bsp(self._type, obj.end.mid, BSPoint.FB)
+
             self.elements.append(obj)
+            # if _from == "analyzer" and self._type == "Duan":
+            #    self.notify_observer(cmd=ZhongShu.CMD_MODIFY)
         else:
             raise ChanException("中枢无法添加元素", relation, self.last_element, obj)
 
@@ -2354,65 +2560,22 @@ class ZhongShu(BaseChanObject, Observer):
             self.level,
         ]
 
-    @classmethod
-    def _bi_analyzer(cls):
-        elements = Bi.OBJS
-        old_size = len(ZhongShu.BI_OBJS)
-        flag, zss = ZhongShu.analyzer(elements)
-        new_size = len(zss)
-        if old_size <= new_size:
-            for i in range(new_size):
-                if i >= old_size:
-                    new = zss[i]
-                    if len(new.elements) >= 3:
-                        ZhongShu.append(cls.BI_OBJS, new, "analyzer")
-                else:
-                    new = zss[i]
-                    old = ZhongShu.BI_OBJS[i]
-                    if new != old:
-                        old.copy_zs(new)
-                        old.notify(cmd=ZhongShu.CMD_MODIFY)
-        else:
-            ...
-
-    @classmethod
-    def _duan_analyzer(cls):
-        elements = Duan.OBJS
-        old_size = len(ZhongShu.DUAN_OBJS)
-        flag, zss = ZhongShu.analyzer(elements)
-        new_size = len(zss)
-
-        if old_size <= new_size:
-            for i in range(new_size):
-                if i >= old_size:
-                    new = zss[i]
-                    if len(new.elements) >= 3:
-                        ZhongShu.append(cls.DUAN_OBJS, new, "analyzer")
-                else:
-                    new = zss[i]
-                    old = ZhongShu.DUAN_OBJS[i]
-                    if new != old:
-                        old.copy_zs(new)
-                        old.notify(cmd=ZhongShu.CMD_MODIFY)
-        else:
-            ...
-
     @staticmethod
-    def append(zss: List["ZhongShu"], zs: "ZhongShu", _from=None):
+    def append(zss: List["ZhongShu"], zs: "ZhongShu", _from):
         i = 0
         if zss:
             i = zss[-1].index + 1
         zss.append(zs)
         zs.index = i
         if _from == "analyzer":
-            zs.notify(cmd=ZhongShu.CMD_APPEND)
+            zs.notify_observer(cmd=ZhongShu.CMD_APPEND, obj=zs)
 
     @staticmethod
-    def pop(zss: List["ZhongShu"], zs: "ZhongShu", _from=None) -> "ZhongShu":
+    def pop(zss: List["ZhongShu"], zs: "ZhongShu", _from) -> "ZhongShu":
         if zss:
             if zss[-1] is zs:
                 if _from == "analyzer":
-                    zs.notify(cmd=ZhongShu.CMD_REMOVE)
+                    zs.notify_observer(cmd=ZhongShu.CMD_REMOVE, obj=zs)
                 return zss.pop()
 
     @staticmethod
@@ -2420,84 +2583,90 @@ class ZhongShu(BaseChanObject, Observer):
         cmd = "ZS.POP"
         if not zss:
             return
-
-        last = zss[-1]
-        zsdp("    " * level, cmd, obj in last.elements, obj)
-        last.pop_element(obj, _from)
-        if last.last_element is None:
-            ZhongShu.pop(zss, last, _from)
-            if zss:
-                last = zss[-1]
-                if obj is last.last_element:
-                    dp("递归删除中枢元素", obj)
-                    ZhongShu.analyzer_pop(obj, zss, level, _from)
+        lzs = zss[-1]
+        if obj in lzs.elements:
+            lzs.pop_element(obj, _from)
+            if len(lzs.elements) < 3:
+                ZhongShu.pop(zss, lzs, _from)
+        elif obj is lzs.third:
+            obj.clear_observer()
+            lzs.third = None
 
     @staticmethod
     def analyzer_push(
-        obj: Union[Bi, Duan],
+        obj: Union[Bi, Duan],  # 当前最新
         zss: List["ZhongShu"],
-        objs: List[Union[Bi, Duan]],
+        objs: Union[List[Bi], List[Duan]],  #
         level: int,
         _from="analyzer",
     ):
         cmd = "ZS.PUSH"
-        new = ZhongShu(
-            type(obj).__name__,
-            Direction.Up if obj.direction is Direction.Down else Direction.Down,
-            obj,
-        )
         if not zss:
-            ZhongShu.append(zss, new, _from)
-            return
-        last = zss[-1]
-        zsdp("    " * level, cmd, len(last.elements), obj)
-
-        if len(last.elements) >= 3:
-            relation = double_relation(last, obj)
-            if relation in (Direction.JumpUp, Direction.JumpDown):
-                last.third = obj
-                ZhongShu.append(zss, new, _from)
-                zsdp("    " * level, cmd, "添加新中枢", new)
-            else:
-                last.append_element(obj, _from)
-
-        elif len(last.elements) == 2:
-            flag, scope = triple_scope(last.left, last.mid, obj)
-            relation = double_relation(last.left, obj)
-            zsdp("    " * level, cmd, "中枢范围:", flag, scope)
-            if relation in (Direction.JumpUp, Direction.JumpDown):
-                # 这里需要判断走势
-                if obj.done is False:
-                    last.append_element(obj, _from)
-                else:
-                    ZhongShu.pop(zss, last, _from)
-                    ZhongShu.append(zss, new, _from)
-                    zsdp("    " * level, cmd, "不满足中枢条件弹出并添加新中枢", new)
-            else:
-                last.append_element(obj, _from)
-
-        elif len(last.elements) == 1:
-            i = objs.index(last.elements[0])
-            if i > 1:
-                relation = double_relation(objs[i - 2], last.elements[0])
-                if (
-                    last.elements[0].direction is Direction.Up
-                    and relation is Direction.Up
-                ) or (
-                    last.elements[0].direction is Direction.Down
-                    and relation is Direction.Down
+            if len(objs) >= 3:
+                if double_relation(objs[-3], objs[-1]) in (
+                    Direction.JumpUp,
+                    Direction.JumpDown,
                 ):
-                    ZhongShu.pop(zss, last, _from)
-                    ZhongShu.append(zss, new, _from)
-                    zsdp("    " * level, cmd, "不满足中枢条件弹出并添加新中枢2", new)
-                else:
-                    last.append_element(obj, _from)
+                    return
+                new = ZhongShu(
+                    type(obj).__name__,
+                    Direction.Up if obj.direction is Direction.Down else Direction.Down,
+                    obj,
+                )
+                new.elements = objs[-3:]
+                if new._type == "Duan":
+                    new.elements[-1].attach_observer(new)
+                ZhongShu.append(zss, new, _from)
+            return
+
+        lzs = zss[-1]
+        if double_relation(lzs, obj) in (Direction.JumpUp, Direction.JumpDown):
+            if lzs.third is None:
+                lzs.third = obj
+                if lzs._type == "Duan":
+                    obj.attach_observer(lzs)
             else:
-                last.append_element(obj, _from)
+                assert lzs.third is not obj
+                if lzs.third.direction is obj.direction:
+                    if double_relation(objs[-3], objs[-1]) in (
+                        Direction.JumpUp,
+                        Direction.JumpDown,
+                    ):
+                        return
+                    new = ZhongShu(
+                        type(obj).__name__,
+                        Direction.Up
+                        if obj.direction is Direction.Down
+                        else Direction.Down,
+                        obj,
+                    )
+                    new.elements = objs[-3:]
+                    if new._type == "Duan":
+                        new.elements[-1].attach_observer(new)
+                    ZhongShu.append(zss, new, _from)
 
         else:
-            ZhongShu.pop(zss, last, _from)
-            ZhongShu.append(zss, new, _from)
+            if lzs.third is None:
+                lzs.append_element(obj, _from)
+            else:
+                assert lzs.third is not obj
+                if lzs.third.direction is obj.direction:
+                    if double_relation(objs[-3], objs[-1]) in (
+                        Direction.JumpUp,
+                        Direction.JumpDown,
+                    ):
+                        return
+                    new = ZhongShu(
+                        type(obj).__name__,
+                        Direction.Up
+                        if obj.direction is Direction.Down
+                        else Direction.Down,
+                        obj,
+                    )
+                    new.elements = objs[-3:]
+                    if new._type == "Duan":
+                        new.elements[-1].attach_observer(new)
+                    ZhongShu.append(zss, new, _from)
 
     @staticmethod
     def analyzer(elements: List[Union[Bi, Duan]]) -> tuple[bool, list]:
@@ -2520,7 +2689,7 @@ class ZouShi(BaseChanObject, Observer):
         self.elements = [obj]
         self.zss: List[ZhongShu] = []
 
-        self.attach(self)
+        self.attach_observer(self)
 
     @property
     def last_element(self) -> Union[Bi, Duan, RawBar, NewBar, ZhongShu]:
@@ -2542,7 +2711,7 @@ class ZouShi(BaseChanObject, Observer):
             raise ChanException("走势无法添加元素", relation, self.last_element, obj)
 
     def update(self, observable: "Observable", **kwords: Any):
-        cmd = kwords.get('cmd')
+        cmd = kwords.get("cmd")
 
         super().update(observable, **kwords)
 
@@ -2551,6 +2720,8 @@ class BaseAnalyzer:
     def __init__(self, symbol: str, freq: int):
         self.__symbol = symbol
         self.__freq = freq
+        Observer.sigals.clear()
+        Observer.sigal = None
         RawBar.OBJS = []
         NewBar.OBJS = []
         FenXing.OBJS = []
@@ -2573,8 +2744,6 @@ class BaseAnalyzer:
     def freq(self) -> int:
         return self.__freq
 
-    def xd_zs_bc(self): ...
-
     def push(
         self,
         bar: RawBar,
@@ -2582,6 +2751,7 @@ class BaseAnalyzer:
         slow_period: int = BaseChanObject.SLOW,
         signal_period: int = BaseChanObject.SIGNAL,
     ):
+        Observer.sigal = None
         last = self._news[-1] if self._news else None
         news = self._news
         if last is None:
@@ -2589,7 +2759,7 @@ class BaseAnalyzer:
         else:
             last.merge(bar)
 
-        klines = news
+        klines = RawBar.OBJS
         if len(klines) == 1:
             ema_slow = klines[-1].close
             ema_fast = klines[-1].close
@@ -2780,14 +2950,15 @@ class CZSCAnalyzer:
     def load_bytes(cls, symbol: str, bytes_data: bytes, freq: int) -> "Self":
         size = struct.calcsize(">6d")
         obj = cls(symbol, freq)
-        bytes_data = bytes_data[: size * 300]
+        bytes_data = bytes_data  #    [size * 600 : size * 743]
         while bytes_data:
             t = bytes_data[:size]
             k = RawBar.from_bytes(t)
             obj.push(k)
-
             bytes_data = bytes_data[size:]
             if len(bytes_data) < size:
+                break
+            if Observer.CAN and Observer.thread is None:
                 break
         return obj
 
@@ -2813,7 +2984,112 @@ class CZSCAnalyzer:
             return cls.load_bytes(symbol, dat, int(freq))
 
 
-def main_load_file(path: str = "btcusd-300-1713295800-1715695500.dat"):
+class CZSCSigal(bt.Indicator):
+    def __init__(self):
+        self.base_analyzer = CZSCAnalyzer(
+            "btcusd",
+            300,
+            [
+                300,
+            ],
+        )
+
+
+class CZSCStrategy(bt.Strategy):  # BOLL策略程序
+    def __init__(self):  # 初始化
+        self.data_close = self.datas[0].close  # 指定价格序列
+        # 初始化交易指令、买卖价格和手续费
+        self.base_analyzer = CZSCAnalyzer(
+            "btcusd",
+            300,
+            [
+                300,
+            ],
+        )
+        self.order = None
+        self.signals = set()
+
+    def next(self):  # 买卖策略
+        dt = self.datas[0].datetime[0]
+        o = self.datas[0].open[0]
+        h = self.datas[0].high[0]
+        l = self.datas[0].low[0]
+        c = self.datas[0].close[0]
+        v = self.datas[0].volume[0]
+        self.base_analyzer.step(bt.num2date(dt), o, h, l, c, v)
+        if Observer.sigal:
+            t, bar, bst = Observer.sigal
+            offset = NewBar.OBJS[-1].index - bar.index
+            if offset > 2:
+                return
+            if Observer.sigal in self.signals:
+                return
+            self.signals.add(Observer.sigal)
+            # print(t, bar, bst)
+            if not self.position:
+                if bst in (BSPoint.FB, BSPoint.SB, BSPoint.TB):
+                    self.log(f"BUY CREATE, {self.data_close[0]}, {bst}")
+                    self.order = self.buy()
+            else:
+                # print(self.position)
+
+                if bst in (BSPoint.FS, BSPoint.SS, BSPoint.TS):
+                    self.log(f"SELL CREATE, {self.data_close[0]}, {bst}")
+                    self.order = self.sell()
+                if bst in (BSPoint.FB, BSPoint.SB, BSPoint.TB):
+                    self.log(f"BUY CREATE, {self.data_close[0]}, {bst}")
+                    self.order = self.buy()
+        Observer.sigal = None
+        return
+
+    def log(self, txt, dt=None, do_print=False):  # 日志函数
+        dt = dt or bt.num2date(self.datas[0].datetime[0])
+        print("%s, %s" % (dt, txt))
+
+    def notify_order(self, order):  # 记录交易执行情况
+        if order.status in [order.Submitted, order.Accepted]:
+            return
+
+        if order.status == order.Rejected:
+            self.log(
+                f"Rejected : order_ref:{order.ref}  data_name:{order.p.data._name}"
+            )
+
+        if order.status == order.Margin:
+            self.log(f"Margin : order_ref:{order.ref}  data_name:{order.p.data._name}")
+
+        if order.status == order.Cancelled:
+            self.log(
+                f"Concelled : order_ref:{order.ref}  data_name:{order.p.data._name}"
+            )
+
+        if order.status == order.Partial:
+            self.log(f"Partial : order_ref:{order.ref}  data_name:{order.p.data._name}")
+
+        if order.status == order.Completed:
+            if order.isbuy():
+                self.log(
+                    f" BUY : data_name:{order.p.data._name} price : {order.executed.price} , cost : {order.executed.value} , commission : {order.executed.comm}"
+                )
+
+            else:  # Sell
+                self.log(
+                    f" SELL : data_name:{order.p.data._name} price : {order.executed.price} , cost : {order.executed.value} , commission : {order.executed.comm}"
+                )
+
+    def notify_trade(self, trade):  # 记录交易收益情况
+        if not trade.isclosed:
+            return
+        self.log(f"策略收益：\n毛收益 {trade.pnl:.2f}, 净收益 {trade.pnlcomm:.2f}")
+
+    def stop(self):  # 回测结束后输出结果
+        self.log(
+            "期末总资金 %.2f" % (self.broker.getvalue()),
+            do_print=True,
+        )
+
+
+def main_load_file1(path: str = "btcusd-300-1713295800-1715695500.dat"):
     obj = CZSCAnalyzer.load_file(path)
     obj.toCharts()
     return obj
@@ -2856,8 +3132,25 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             message = json.loads(data)
             if message["type"] == "ready":
-                thread = Thread(target=main_load_file)  # 使用线程来运行main函数
-                thread.start()
+                if Observer.thread is not None:
+                    tmp = Observer.thread
+                    Observer.thread = None
+                    Observer.sigals.clear()
+                    Observer.sigal = None
+                    RawBar.OBJS = []
+                    NewBar.OBJS = []
+                    FenXing.OBJS = []
+                    Bi.OBJS = []
+                    Duan.OBJS = []
+                    ZhongShu.OBJS = []
+                    ZhongShu.BI_OBJS = []
+                    ZhongShu.DUAN_OBJS = []
+                    tmp.join(1)
+                    time.sleep(1)
+                Observer.thread = Thread(
+                    target=main_load_file1
+                )  # 使用线程来运行main函数
+                Observer.thread.start()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
@@ -2909,7 +3202,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     supports_marks: false,
                     supports_timescale_marks: true,
                     supports_time: true,
-                    supported_resolutions: [5, ],//['1s', '1', '3', '5', '6', '12', '24', '30', '48', '64', '128', '1H', '2H', '3H', '4H', '6H', '8H', '12H', '36H', '1D', '2D', '3D', '5D', '12D', '1W'],
+                    supported_resolutions: [5,],//['1s', '1', '3', '5', '6', '12', '24', '30', '48', '64', '128', '1H', '2H', '3H', '4H', '6H', '8H', '12H', '36H', '1D', '2D', '3D', '5D', '12D', '1W'],
                 }));
             },
             searchSymbols: async (
@@ -3007,11 +3300,11 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                         onRealtimeCallback(bar);
                         //createShape(message.shape);
                     } else if (message.type === "shape") {
-                        if (message.cmd === "append") {
+                        if (message.cmd === "bi_append" || message.cmd === "duan_append" || message.cmd === "zs_append" || message.cmd === "feature_append") {
                             addShapeToChart(message);
-                        } else if (message.cmd === "remove") {
-                            delShapeById(message.id)
-                        } else if (message.cmd === "modify") {
+                        } else if (message.cmd === "bi_remove" || message.cmd === "duan_remove" || message.cmd === "zs_remove" || message.cmd === "feature_remove") {
+                            delShapeById(message)
+                        } else if (message.cmd === "bi_modify" || message.cmd === "duan_modify" || message.cmd === "zs_modify" || message.cmd === "feature_modify") {
                             modifyShape(message)
                         }
 
@@ -3043,14 +3336,19 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
             }
         }
 
-        function delShapeById(shapeId) {
+        function delShapeById(obj) {
             if (window.tvWidget) {
-                const id = shape_ids[shapeId];
-                const shape = window.tvWidget.chart().getShapeById(id);
-                if (debug) console.log(id, shape);
-                window.tvWidget.chart().removeEntity(id);
-                delete shape_ids[shapeId];
-                //console.log("del", shapeId, id);
+                try {
+                    const shapeId = obj.id
+                    const id = shape_ids[shapeId];
+                    delete shape_ids[shapeId];
+                    const shape = window.tvWidget.chart().getShapeById(id);
+                    if (debug) console.log(id, shape);
+                    window.tvWidget.chart().removeEntity(id);
+                    //console.log("del", shapeId, id);
+                } catch (e) {
+                    console.log("删除失败", obj, e)
+                }
 
             }
         }
@@ -3080,7 +3378,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     console.log("Shape does not exist.");
                 }
             } catch (e) {
-                console.log(obj.options.shape, obj.id, e)
+                console.log("修改失败", obj, e)
             }
         }
 
@@ -3116,18 +3414,86 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     "go_to_date", // 日期跳转
                 ],
                 time_frames: [
-                    { text: "3d", resolution: "5", description: "3 Days" },
-                    { text: "7d", resolution: "5", description: "7 Days" },
+                    {text: "3d", resolution: "5", description: "3 Days"},
+                    {text: "7d", resolution: "5", description: "7 Days"},
                 ],
             }));
             widget.headerReady().then(function () {
                 //widget.activeChart().createStudy('MACD');
+
                 function createHeaderButton(text, title, clickHandler, options) {
                     var button = widget.createButton(options);
                     button.setAttribute('title', title);
                     button.textContent = text;
                     button.addEventListener('click', clickHandler);
                 }
+
+                createHeaderButton('笔买卖点', '显示隐藏买卖点', function () {
+                    widget.activeChart().getAllShapes().forEach(({name, id}) => {
+                        //console.log(name);
+                        if (name === "arrow_up" || name === "arrow_down") {
+                            var shape = widget.activeChart().getShapeById(id);
+                            //console.log(id, shape.getProperties());
+                            shape = window.tvWidget.chart().getShapeById(id);
+
+                            var properties = shape.getProperties();
+                            if (properties.title === "BiFS" || properties.title === "BiSS" || properties.title === "BiTS"
+                                || properties.title === "BiFB" || properties.title === "BiSB" || properties.title === "BiTB"
+                            )
+                                if (properties.visible === true) {
+                                    shape.setProperties({"visible": false})
+                                } else {
+                                    shape.setProperties({"visible": true})
+                                }
+
+
+                        }
+                    });
+                });
+
+                createHeaderButton('段买卖点', '显示隐藏买卖点', function () {
+                    widget.activeChart().getAllShapes().forEach(({name, id}) => {
+                        //console.log(name);
+                        if (name === "arrow_up" || name === "arrow_down") {
+                            var shape = widget.activeChart().getShapeById(id);
+                            //console.log(id, shape.getProperties());
+                            shape = window.tvWidget.chart().getShapeById(id);
+
+                            var properties = shape.getProperties();
+                            if (properties.title === "DuanFS" || properties.title === "DuanSS" || properties.title === "DuanTS"
+                                || properties.title === "DuanFB" || properties.title === "DuanSB" || properties.title === "DuanTB"
+                            )
+                                if (properties.visible === true) {
+                                    shape.setProperties({"visible": false})
+                                } else {
+                                    shape.setProperties({"visible": true})
+                                }
+
+
+                        }
+                    });
+                });
+
+                createHeaderButton('特征序列', '显示隐藏特征序列', function () {
+                    widget.activeChart().getAllShapes().forEach(({name, id}) => {
+                        //console.log(name);
+                        if (name === "trend_line") {
+                            var shape = widget.activeChart().getShapeById(id);
+                            //console.log(id, shape.getProperties());
+                            shape = window.tvWidget.chart().getShapeById(id);
+
+                            var properties = shape.getProperties();
+                            if (properties.text === "feature")
+                                if (properties.visible === true) {
+                                    shape.setProperties({"visible": false})
+                                } else {
+                                    shape.setProperties({"visible": true})
+                                }
+
+
+                        }
+                    });
+                });
 
                 createHeaderButton('笔', '显示隐藏笔', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
@@ -3241,7 +3607,6 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 <div id="tv_chart_container"></div>
 </body>
 </html>
-
 """.replace("$charting_library$", charting_library)
     )
 
@@ -3311,8 +3676,42 @@ class ConnectionManager:
             await connection.send_text(message)
 
 
+def huice():
+    cerebro = bt.Cerebro()
+    with open("btcusd-300-1713295800-1715695500.dat", "rb") as f:
+        cerebro.adddata(
+            bt.feeds.PandasData(
+                dataname=bs2df(f.read()), timeframe=bt.TimeFrame.Minutes
+            )
+        )
+        cerebro.addstrategy(CZSCStrategy)
+        cerebro.broker.setcash(1000000)
+        cerebro.broker.setcommission(commission=0.0005)
+        # cerebro.addsizer(bt.sizers.FixedSize, stake=100)
+        cerebro.run(runonce=False)
+        end_value = cerebro.broker.getvalue()
+        print("期末总资金: %.2f" % end_value)
+
+
 # RawBar.PATCHES[ts2int("2024-04-17 21:20:00")] = Pillar(62356, 62100)
 manager = ConnectionManager()
-Observer.TIME = 0.05
+Observer.TIME = 0.02
 if __name__ == "__main__":
-    bit = main_load_file("btcusd-300-1713295800-1715695500.dat")
+    # bit = main_load_file("btcusd-300-1713295800-1715695500.dat")
+    cerebro = bt.Cerebro()
+    with open("btcusd-300-1713295800-1715695500.dat", "rb") as f:
+        cerebro.adddata(
+            bt.feeds.PandasData(
+                dataname=bs2df(f.read()), timeframe=bt.TimeFrame.Minutes
+            )
+        )
+        cerebro.addstrategy(CZSCStrategy)
+        cerebro.broker.setcash(1000000)
+        cerebro.broker.setcommission(commission=0.0005)
+        # cerebro.addsizer(bt.sizers.FixedSize, stake=100)
+        cerebro.run(runonce=False)
+        end_value = cerebro.broker.getvalue()
+        print("期末总资金: %.2f" % end_value)
+        cerebro.plot()
+        print(len(Observer.sigals))
+        # 巨亏～
