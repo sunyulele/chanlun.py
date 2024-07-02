@@ -111,13 +111,15 @@ class Freq(Enum):
     S5: int = 5
     S12: int = 12
     m1: int = 60 * 1
-    m3: int = 60 * 3
-    m5: int = 60 * 5
-    m15: int = 60 * 15
-    m30: int = 60 * 30
-    H1: int = 60 * 60 * 1
-    H2: int = 60 * 60 * 2
-    H4: int = 60 * 60 * 4
+    m3: int = 60 * 3  # 180
+    m5: int = 60 * 5  # 300
+    m15: int = 60 * 15  # 900
+    m30: int = 60 * 30  # 1800
+    H1: int = 60 * 60 * 1  # 3600
+    H2: int = 60 * 60 * 2  # 7200
+    H4: int = 60 * 60 * 4  # 14400
+    H6: int = 60 * 60 * 6  # 21600
+    H12: int = 60 * 60 * 12  # 43200
     D1: int = 60 * 60 * 24  # 86400
     D3: int = 60 * 60 * 24 * 3  # 259200
 
@@ -176,7 +178,7 @@ def _print(*args, **kwords):
 
 def dp(*args, **kwords):
     if not 0:
-        _print(*args, **kwords)
+        _print(*args, **kwords)  #! jing
 
 
 def bdp(*args, **kwargs):
@@ -386,13 +388,13 @@ class Observer(metaclass=ABCMeta):
             assert self._appended is True, self
 
     @classmethod
-    def plot_bsp(cls, _type, bar: "NewBar", bsp: BSPoint):
+    def plot_bsp(cls, _type, bar: "NewBar", bsp: BSPoint, real: bool = True):
         if cls.CAN:
             offset = NewBar.OBJS[-1].index - bar.index
             points = [
                 {"time": int(bar.dt.timestamp()), "price": bar.speck},
             ]
-            if (_type, bar, bsp) in Observer.sigals:
+            if (_type, bar, bsp) in Observer.sigals and real:
                 Observer.sigal = None
                 return
             # print("plot_bsp", bar, bsp, RawBar.OBJS[-1].dt)
@@ -409,11 +411,13 @@ class Observer(metaclass=ABCMeta):
                     "text": f"{_type}{bsp.value}{offset}",
                 }
                 properties = {"title": f"{_type}{bsp.name}"}
+            if not real:
+                properties["color"] = "#FFFA50"
             message = {
                 "type": "shape",
-                "cmd": ZhongShu.CMD_APPEND,
+                "cmd": ZhongShu.CMD_APPEND if real else ZhongShu.CMD_MODIFY,
                 "name": options["shape"],
-                "id": bar.shape_id,
+                "id": bar.shape_id + _type,
                 "points": points,
                 "options": options,
                 "properties": properties,
@@ -639,7 +643,7 @@ class RawBar(BaseChanObject, Observer):
 
     def update(self, observer: "Observer", **kwords: Any):
         cmd = kwords.get("cmd")
-        # return
+        return
 
         if cmd in (RawBar.CMD_APPEND,):
             message = {
@@ -717,9 +721,6 @@ class NewBar(BaseChanObject, Observer):
     缠论 K线
     """
 
-    KEY_BI_ZS_ID = "KEY_BI_ZS_ID"
-    KEY_DUAN_ID = "KEY_DUAN_ID"
-
     CMD_APPEND = "append"
 
     OBJS: List["NewBar"] = []
@@ -776,7 +777,7 @@ class NewBar(BaseChanObject, Observer):
 
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
-        return
+        # return
         # https://www.tradingview.com/charting-library-docs/v26/api/interfaces/Charting_Library.CreateShapeOptions/
         point = {"time": int(self.dt.timestamp())}
         options = {
@@ -2251,13 +2252,14 @@ class ZhongShu(BaseChanObject, Observer):
 
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
-        obj = kwords.get("obj")
+        obj: Observable = kwords.get("obj")
         if cmd == f"{self.__class__.__name__}_{BaseChanObject.CMD_DONE}":
             self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
             return
 
-        if cmd == f"{Duan.__class__.__name__}_{BaseChanObject.CMD_DONE}":
+        if cmd == f"{Duan.__name__}_{BaseChanObject.CMD_DONE}":
             self.notify_observer(cmd=ZhongShu.CMD_MODIFY, obj=self)
+            obj.detach_observer(self)
             return
 
         if cmd == Duan.CDM_ZS_OBSERVER:
@@ -2270,6 +2272,7 @@ class ZhongShu(BaseChanObject, Observer):
                     Direction.JumpUp,
                     Direction.JumpDown,
                 ):
+                    self.third = obj
                     return
                 self.elements.append(self.third)
                 self.third = None
@@ -2398,6 +2401,7 @@ class ZhongShu(BaseChanObject, Observer):
 
     @third.setter
     def third(self, third):
+        old = self.__third
         self.__third = third
         if third is not None:
             self.done = True
@@ -2407,6 +2411,12 @@ class ZhongShu(BaseChanObject, Observer):
                 Observer.plot_bsp(self._type, third.end.mid, BSPoint.TB)
         else:
             self.done = False
+
+        if old:
+            if old.end.shape is Shape.G:
+                Observer.plot_bsp(self._type, old.end.mid, BSPoint.TS, False)
+            else:
+                Observer.plot_bsp(self._type, old.end.mid, BSPoint.TB, False)
 
     @property
     def left(self) -> Union[Bi, Duan, RawBar, NewBar]:
@@ -2482,6 +2492,10 @@ class ZhongShu(BaseChanObject, Observer):
             if self.last_element is not obj:
                 dp("警告：中枢元素不匹配!!!", self.last_element, obj)
             self.elements.pop()
+            if obj.end.mid.bsp:
+                print("消除", obj.end.mid)
+                Observer.plot_bsp(self._type, obj.end.mid, obj.end.mid.bsp[-1], False)
+
             # if _from == "analyzer" and self._type == "Duan":
             #   self.notify_observer(cmd=ZhongShu.CMD_MODIFY)
         else:
@@ -2493,15 +2507,6 @@ class ZhongShu(BaseChanObject, Observer):
             size = len(self.elements)
 
             if size >= 3 and (size + 1) % 2 == 0:
-                """print(
-                    "计算买卖点",
-                    size,
-                    self._type,
-                    self.dd,
-                    self.gg,
-                    self.elements[1].direction,
-                    obj.direction,
-                )"""
                 enter = (
                     Bi.OBJS[self.elements[0].index - 1]
                     if self._type == "Bi"
@@ -3097,6 +3102,7 @@ class Bitstamp(CZSCAnalyzer):
                 break
             if Observer.CAN and Observer.thread is None:
                 break
+        Observer.thread = None
 
     @staticmethod
     def ohlc(pair: str, step: int, start: int, end: int, length: int = 1000) -> Dict:
@@ -3217,11 +3223,13 @@ def main_load_file1(path: str = "btcusd-300-1713295800-1715695500.dat"):
     return obj
 
 
-def main_bitstamp():
-    bitstamp = Bitstamp("btcusd", freq=Freq.m5)
-    bitstamp.init(2000)
-    bitstamp.toCharts()
-    return bitstamp
+def main_bitstamp(symbol="btcusd", limit=500, freq=Freq.m5):
+    def func():
+        bitstamp = Bitstamp(symbol, freq=freq)
+        bitstamp.init(int(limit))
+        bitstamp.toCharts()
+
+    return func
 
 
 app = FastAPI()
@@ -3261,6 +3269,11 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             message = json.loads(data)
             if message["type"] == "ready":
+                exchange = message["exchange"]
+                symbol = message["symbol"]
+                freq = message["freq"]
+                limit = message["limit"]
+                print(message)
                 if Observer.thread is not None:
                     tmp = Observer.thread
                     Observer.thread = None
@@ -3277,7 +3290,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     ZhongShu.DUAN_OBJS = []
                     tmp.join(1)
                     time.sleep(1)
-                Observer.thread = Thread(target=main_bitstamp)  # 使用线程来运行main函数
+
+                Observer.thread = Thread(
+                    target=main_bitstamp(symbol=symbol, freq=freq, limit=limit)
+                )  # 使用线程来运行main函数
                 Observer.thread.start()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -3289,13 +3305,38 @@ def static_czsc():
         return HTMLResponse(f.read())
 
 
-@app.get("/{nol}/{exchange}/{symbol}", response_class=HTMLResponse)
-async def home(request: Request, nol: str, exchange: str, symbol: str):
-    print(dir(request))
+@app.get("/")
+async def main_page(
+    request: Request,
+    nol: str = "network",
+    exchange: str = "bitstamp",
+    symbol: str = "btcusd",
+    step: int = 300,
+    limit: int = 500,
+):
+    resolutions = {
+        60: "1",
+        180: "3",
+        300: "5",
+        900: "15",
+        1800: "30",
+        3600: "1H",
+        7200: "2H",
+        14400: "4H",
+        21600: "6H",
+        43200: "12H",
+        86400: "1D",
+        259200: "3D",
+    }
+    if resolutions.get(step) is None:
+        return resolutions
+
     print(request.base_url)
+    Observer.CAN = True
     charting_library = str(
         request.url_for("charting_library", path="/charting_library.standalone.js")
     )
+    print(charting_library)
     return HTMLResponse(
         """<!DOCTYPE html>
 <html lang="zh">
@@ -3306,11 +3347,24 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
     <script type="text/javascript">
         const shape_ids = new Array(); // id 映射
         const debug = false;
+        const exchange = "$exchange$";
+        const ticker = '$symbol$';
+        const name = ticker;//'BTCUSD'
+        const description = ticker;//'Bitcoin/USD'
+        const interval = '$interval$';
+        const step = "$step$";
+        const limit = "$limit$";
         const socket = new WebSocket('ws://localhost:8080/ws');
 
         socket.onopen = () => {
             console.log("WebSocket connection established");
-            socket.send(JSON.stringify({type: 'ready'}));
+            socket.send(JSON.stringify({
+                type: 'ready',
+                exchange: exchange,
+                symbol: name,
+                freq: step,
+                limit: limit
+            }));
         };
 
         socket.onclose = () => {
@@ -3330,9 +3384,10 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     supports_marks: false,
                     supports_timescale_marks: true,
                     supports_time: true,
-                    supported_resolutions: [5,],//['1s', '1', '3', '5', '6', '12', '24', '30', '48', '64', '128', '1H', '2H', '3H', '4H', '6H', '8H', '12H', '36H', '1D', '2D', '3D', '5D', '12D', '1W'],
+                    supported_resolutions: [interval,],//['1s', '1', '3', '5', '6', '12', '24', '30', '48', '64', '128', '1H', '2H', '3H', '4H', '6H', '8H', '12H', '36H', '1D', '2D', '3D', '5D', '12D', '1W'],
                 }));
             },
+
             searchSymbols: async (
                 userInput,
                 exchange,
@@ -3342,6 +3397,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 console.log("[Datafeed.searchSymbols]: Method call", userInput, exchange, symbolType);
 
             },
+
             resolveSymbol: async (
                 symbolName,
                 onSymbolResolvedCallback,
@@ -3351,27 +3407,27 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 console.log("[Datafeed.resolveSymbol]: Method call", symbolName);
                 //return ;
                 const symbolInfo = {
-                    exchange: "okex",
-                    ticker: 'BTCUSD',
-                    name: 'BTCUSD',
-                    description: 'Bitcoin/USD',
+                    exchange: exchange,
+                    ticker: ticker,
+                    name: name,
+                    description: description,
                     type: "",
                     session: '24x7',
                     timezone: 'Asia/Shanghai',
                     minmov: 1,
-                    pricescale: 100,
+                    pricescale: 100000000, // 精度 数值越高小数点
                     visible_plots_set: 'ohlcv',
                     has_no_volume: true,
                     has_weekly_and_monthly: false, // 周线 月线
-                    //supported_resolutions: ['15S', '1', '3', '5', '6', '12', '24', '30', '48', '64', '128', '1H', '2H', '3H', '4H', '6H', '8H', '12H', '36H', '1D', '2D', '3D', '5D', '12D'],
+                    supported_resolutions: ['1', '3', '5', '15', '30', '1H', '2H', '4H', '6H', '12H', '1D', '3D'],
                     volume_precision: 1,
                     data_status: 'streaming',
                     has_intraday: true,
-                    intraday_multipliers: [5,], //['1', "3", "5", '15', "30", '60', "120", "240", "360", "720"],
+                    //intraday_multipliers: [5,], //['1', "3", "5", '15', "30", '60', "120", "240", "360", "720"],
                     has_seconds: false,
-                    seconds_multipliers: ['1S',],
+                    //seconds_multipliers: ['1S',],
                     has_daily: true,
-                    daily_multipliers: ['1', '3'],
+                    //daily_multipliers: ['1', '3'],
                     has_ticks: true,
                     monthly_multipliers: [],
                     weekly_multipliers: [],
@@ -3383,6 +3439,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 }
 
             },
+
             getBars: async (
                 symbolInfo,
                 resolution,
@@ -3400,6 +3457,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     onErrorCallback(error);
                 }
             },
+
             subscribeBars: (
                 symbolInfo,
                 resolution,
@@ -3435,12 +3493,12 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                         } else if (message.cmd === "bi_modify" || message.cmd === "duan_modify" || message.cmd === "zs_modify" || message.cmd === "feature_modify") {
                             modifyShape(message)
                         }
-
                     } else {
                         console.log("未知消息", message);
                     }
                 };
             },
+
             unsubscribeBars: (subscriberUID) => {
                 console.log(
                     "[Datafeed.unsubscribeBars]: Method call with subscriberUID:",
@@ -3453,12 +3511,11 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 
         function addShapeToChart(obj) {
             if (window.tvWidget) {
-                if (debug) console.log(obj);
                 const shape_id = window.tvWidget.chart().createMultipointShape(obj.points, obj.options);
                 shape_ids [obj.id] = shape_id;
                 const shape = window.tvWidget.chart().getShapeById(shape_id);
-                shape.bringToFront();
                 shape.setProperties(obj.properties);
+                shape.bringToFront();
                 //console.log(obj.id, shape_id);
                 //console.log("add", obj.name, obj.id);
             }
@@ -3467,9 +3524,8 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
         function delShapeById(obj) {
             if (window.tvWidget) {
                 try {
-                    const shapeId = obj.id
-                    const id = shape_ids[shapeId];
-                    delete shape_ids[shapeId];
+                    const id = shape_ids[obj.id];
+                    delete shape_ids[obj.id];
                     const shape = window.tvWidget.chart().getShapeById(id);
                     if (debug) console.log(id, shape);
                     window.tvWidget.chart().removeEntity(id);
@@ -3506,7 +3562,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                     console.log("Shape does not exist.");
                 }
             } catch (e) {
-                console.log("修改失败", obj, e)
+                console.log("修改失败", id, obj, e)
             }
         }
 
@@ -3514,8 +3570,8 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
         function initOnReady() {
             //console.log("init widget");
             const widget = (window.tvWidget = new TradingView.widget({
-                symbol: "Bitfinex:BTC/USD", // Default symbol
-                interval: "5", // Default interval
+                symbol: exchange + ":" + description, // Default symbol
+                interval: interval, // Default interval
                 timezone: "Asia/Shanghai",
                 fullscreen: true, // Displays the chart in the fullscreen mode
                 container: "tv_chart_container", // Reference to an attribute of the DOM element
@@ -3550,7 +3606,7 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
                 //widget.activeChart().createStudy('MACD');
 
                 function createHeaderButton(text, title, clickHandler, options) {
-                    var button = widget.createButton(options);
+                    const button = widget.createButton(options);
                     button.setAttribute('title', title);
                     button.textContent = text;
                     button.addEventListener('click', clickHandler);
@@ -3558,177 +3614,101 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 
                 createHeaderButton('笔买卖点', '显示隐藏买卖点', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        //console.log(name);
                         if (name === "arrow_up" || name === "arrow_down") {
-                            var shape = widget.activeChart().getShapeById(id);
-                            //console.log(id, shape.getProperties());
-                            shape = window.tvWidget.chart().getShapeById(id);
-
-                            var properties = shape.getProperties();
+                            const shape = window.tvWidget.chart().getShapeById(id);
+                            const properties = shape.getProperties();
                             if (properties.title === "BiFS" || properties.title === "BiSS" || properties.title === "BiTS"
                                 || properties.title === "BiFB" || properties.title === "BiSB" || properties.title === "BiTB"
                             )
-                                if (properties.visible === true) {
-                                    shape.setProperties({"visible": false})
-                                } else {
-                                    shape.setProperties({"visible": true})
-                                }
-
-
+                                shape.setProperties({visible: !properties.visible})
                         }
                     });
                 });
 
                 createHeaderButton('段买卖点', '显示隐藏买卖点', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        //console.log(name);
                         if (name === "arrow_up" || name === "arrow_down") {
-                            var shape = widget.activeChart().getShapeById(id);
-                            //console.log(id, shape.getProperties());
-                            shape = window.tvWidget.chart().getShapeById(id);
-
-                            var properties = shape.getProperties();
+                            const shape = window.tvWidget.chart().getShapeById(id);
+                            const properties = shape.getProperties();
                             if (properties.title === "DuanFS" || properties.title === "DuanSS" || properties.title === "DuanTS"
                                 || properties.title === "DuanFB" || properties.title === "DuanSB" || properties.title === "DuanTB"
                             )
-                                if (properties.visible === true) {
-                                    shape.setProperties({"visible": false})
-                                } else {
-                                    shape.setProperties({"visible": true})
-                                }
-
-
+                                shape.setProperties({visible: !properties.visible})
                         }
                     });
                 });
 
                 createHeaderButton('特征序列', '显示隐藏特征序列', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        //console.log(name);
                         if (name === "trend_line") {
-                            var shape = widget.activeChart().getShapeById(id);
-                            //console.log(id, shape.getProperties());
-                            shape = window.tvWidget.chart().getShapeById(id);
-
-                            var properties = shape.getProperties();
-                            if (properties.text === "feature")
-                                if (properties.visible === true) {
-                                    shape.setProperties({"visible": false})
-                                } else {
-                                    shape.setProperties({"visible": true})
-                                }
-
-
+                            const shape = window.tvWidget.chart().getShapeById(id);
+                            const properties = shape.getProperties();
+                            if (properties.text.indexOf("feature") === 0)
+                                shape.setProperties({visible: !properties.visible})
                         }
                     });
                 });
 
                 createHeaderButton('笔', '显示隐藏笔', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        //console.log(name);
                         if (name === "trend_line") {
-                            var shape = widget.activeChart().getShapeById(id);
-                            //console.log(id, shape.getProperties());
-                            shape = window.tvWidget.chart().getShapeById(id);
-
-                            var properties = shape.getProperties();
-                            if (properties.text === "bi")
-                                if (properties.visible === true) {
-                                    shape.setProperties({"visible": false})
-                                } else {
-                                    shape.setProperties({"visible": true})
-                                }
-
-
+                            const shape = window.tvWidget.chart().getShapeById(id);
+                            const properties = shape.getProperties();
+                            if (properties.text.indexOf("bi") === 0)
+                                shape.setProperties({visible: !properties.visible})
                         }
                     });
                 });
                 createHeaderButton('段', '显示隐藏段', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        //console.log(name);
                         if (name === "trend_line") {
-                            var shape = widget.activeChart().getShapeById(id);
-                            //console.log(id, shape.getProperties());
-                            shape = window.tvWidget.chart().getShapeById(id);
-
-                            var properties = shape.getProperties();
-                            if (properties.text === "duan")
-                                if (properties.visible === true) {
-                                    shape.setProperties({"visible": false})
-                                } else {
-                                    shape.setProperties({"visible": true})
-                                }
-
-
+                            const shape = window.tvWidget.chart().getShapeById(id);
+                            const properties = shape.getProperties();
+                            if (properties.text.indexOf("duan") === 0)
+                                shape.setProperties({visible: !properties.visible})
                         }
                     });
                 });
                 createHeaderButton('笔中枢', '显示隐藏笔中枢', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        //console.log(name);
                         if (name === "rectangle") {
-                            var shape = widget.activeChart().getShapeById(id);
-                            //console.log(id, shape.getProperties());
-                            shape = window.tvWidget.chart().getShapeById(id);
-
-                            var properties = shape.getProperties();
-                            if (properties.text === "Bizs")
-                                if (properties.visible === true) {
-                                    shape.setProperties({"visible": false})
-                                } else {
-                                    shape.setProperties({"visible": true})
-                                }
-
-
+                            const shape = window.tvWidget.chart().getShapeById(id);
+                            const properties = shape.getProperties();
+                            if (properties.text.indexOf("Bizs") === 0)
+                                shape.setProperties({visible: !properties.visible})
                         }
                     });
                 });
                 createHeaderButton('段中枢', '显示隐藏段中枢', function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
-                        //console.log(name);
                         if (name === "rectangle") {
-                            var shape = widget.activeChart().getShapeById(id);
-                            //console.log(id, shape.getProperties());
-                            shape = window.tvWidget.chart().getShapeById(id);
-
-                            var properties = shape.getProperties();
-                            if (properties.text === "Duanzs")
-                                if (properties.visible === true) {
-                                    shape.setProperties({"visible": false})
-                                } else {
-                                    shape.setProperties({"visible": true})
-                                }
-
-
+                            const shape = window.tvWidget.chart().getShapeById(id);
+                            const properties = shape.getProperties();
+                            if (properties.text.indexOf("Duanzs") === 0)
+                                shape.setProperties({visible: !properties.visible})
                         }
                     });
                 });
                 widget.onChartReady(function () {
                     widget.subscribe("drawing_event", function (sourceId, drawingEventType) {
+                        // properties_changed, remove, points_changed, click
+                        if (debug) console.log("[drawing_event]", "id:", sourceId, "event type:", drawingEventType)
                         if (drawingEventType.indexOf("click") === 0) {
-
-                            var shape = widget.activeChart().getShapeById(sourceId);
-                            var points = shape._source._points;
-                            console.log(points, points.length, shape.getProperties());
-                            var res = [];
-                            for (var i = 0; i < points.length; i++) {
-                                //console.log(i, points[i])
-                                res.push(parseInt(points[i].price))
+                            const shape = widget.activeChart().getShapeById(sourceId);
+                            const properties = shape.getProperties();
+                            const points = shape.getPoints();
+                            const toolname = shape._source.toolname;
+                            if (toolname === 'LineToolTrendLine') {
+                                shape.setProperties({showLabel: !properties.showLabel})
                             }
-                            //console.log(sourceId, drawingEventType, res.join(','))
+                            console.log(toolname, points, properties);
                         }
-
-
                     })
-
                 });
-
             });
         }
 
-
         window.addEventListener("DOMContentLoaded", initOnReady, false);
-
     </script>
 </head>
 <body style="margin:0px;">
@@ -3736,14 +3716,12 @@ async def home(request: Request, nol: str, exchange: str, symbol: str):
 </body>
 </html>
 """.replace("$charting_library$", charting_library)
+        .replace("$exchange$", exchange)
+        .replace("$symbol$", symbol)
+        .replace("$interval$", resolutions.get(step))
+        .replace("$limit$", str(limit))
+        .replace("$step$", str(step))
     )
-
-
-@app.get("/")
-async def main_page(request: Request):
-    Observer.CAN = True
-    # Observer.loop = asyncio.get_event_loop()
-    return await home(request, "local", "oke", "btcusd")
 
 
 async def handle_message(message: dict):
