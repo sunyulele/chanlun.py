@@ -371,6 +371,7 @@ class Observer(metaclass=ABCMeta):
     @abstractmethod
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
+        obj = kwords.get("obj")
         if cmd in (
             Bi.CMD_REMOVE,
             Duan.CMD_REMOVE,
@@ -400,6 +401,27 @@ class Observer(metaclass=ABCMeta):
         ):
             assert self._appended is True, self
             assert self._removed is False, self
+
+    @classmethod
+    def plot_bar(cls, bar: Union["NewBar", "RawBar"]):
+        if not cls.CAN:
+            return
+        message = {
+            "type": "realtime",
+            "timestamp": bar.dt.isoformat(),
+            "open": bar.open,
+            "close": bar.close,
+            "high": bar.high,
+            "low": bar.low,
+            "volume": bar.volume,
+        }
+        future = asyncio.run_coroutine_threadsafe(
+            Observer.queue.put(message), Observer.loop
+        )
+        try:
+            future.result()  # 确保任务已添加到队列
+        except Exception as e:
+            print(f"Error adding task to queue: {e}")
 
     @classmethod
     def plot_bsp(cls, _type, bar: "NewBar", bsp: BSPoint, real: bool = True):
@@ -458,6 +480,12 @@ class Observable(object):
         self._removed = False
         self._appended = False
 
+    def none_observer(self):
+        self.__observers = None
+
+    def new_observer(self):
+        self.__observers = []
+
     # 清空观察者
     def clear_observer(self):
         self.__observers.clear()
@@ -475,6 +503,14 @@ class Observable(object):
         assert kwords.get("obj") is not None
         assert kwords.get("obj") is self
         if Observer.CAN:
+            if self.__observers is None:
+                print("警告 观察者 为 None", kwords)
+                return
+            name = self.__class__.__name__
+            if name in ("Bi", "Duan", "ZhongShu", "FeatureSequence"):
+                NewBar.OBJS and print(
+                    "\n", name, NewBar.OBJS[-1].dt, kwords, self.__observers
+                )
             for o in self.__observers:
                 o.update(self, **kwords)
 
@@ -703,11 +739,6 @@ class BaseChanObject(Observable):
 
 
 class RawBar(BaseChanObject, Observer):
-    """
-    原始K线对象
-
-    """
-
     OBJS: List["RawBar"] = []
     PATCHES: Dict[int, Pillar] = dict()
 
@@ -758,8 +789,8 @@ class RawBar(BaseChanObject, Observer):
 
         self.elements = None
         RawBar.OBJS.append(self)
-        self.attach_observer(self)
-        self.notify_observer(cmd=RawBar.CMD_APPEND, obj=self)
+        self.update(self, cmd=RawBar.CMD_APPEND)
+        self.none_observer()
 
     def __eq__(self, other):
         if (
@@ -782,27 +813,15 @@ class RawBar(BaseChanObject, Observer):
         return f"{self.__class__.__name__}({self.dt}, {self.high}, {self.low}, index={self.index})"
 
     def update(self, observer: "Observer", **kwords: Any):
-        cmd = kwords.get("cmd")
+        if not Observer.CAN:
+            return
+
         if not Observer.USE_RAW:
             return
 
+        cmd = kwords.get("cmd")
         if cmd in (RawBar.CMD_APPEND,):
-            message = {
-                "type": "realtime",
-                "timestamp": self.dt.isoformat(),
-                "open": self.open,
-                "close": self.close,
-                "high": self.high,
-                "low": self.low,
-                "volume": self.volume,
-            }
-            future = asyncio.run_coroutine_threadsafe(
-                Observer.queue.put(message), Observer.loop
-            )
-            try:
-                future.result()  # 确保任务已添加到队列
-            except Exception as e:
-                print(f"Error adding task to queue: {e}")
+            Observer.plot_bar(self)
 
     def __bytes__(self):
         return struct.pack(
@@ -858,13 +877,9 @@ class RawBar(BaseChanObject, Observer):
 
 
 class NewBar(BaseChanObject, Observer):
-    """
-    缠论 K线
-    """
+    OBJS: List["NewBar"] = []
 
     CMD_APPEND = "append"
-
-    OBJS: List["NewBar"] = []
 
     __slots__ = (
         "__shape",
@@ -910,40 +925,21 @@ class NewBar(BaseChanObject, Observer):
                 if relation in (Direction.JumpUp, Direction.Up)
                 else Direction.Down
             )
-        NewBar.OBJS.append(self)
-        self.attach_observer(self)
-        self.notify_observer(cmd=NewBar.CMD_APPEND, obj=self)
-
         self.bsp: List[BSPoint] = []
+        NewBar.OBJS.append(self)
+        self.update(self, cmd=NewBar.CMD_APPEND)
+        self.none_observer()
 
     def update(self, observable: "Observable", **kwords: Any):
-        cmd = kwords.get("cmd")
-        # https://www.tradingview.com/charting-library-docs/v26/api/interfaces/Charting_Library.CreateShapeOptions/
+        if not Observer.CAN:
+            return
+
         if Observer.USE_RAW:
             return
-        point = {"time": int(self.dt.timestamp())}
-        options = {
-            "shape": "arrow_up" if self.direction is Direction.Up else "arrow_down",
-            "text": str(self.index),
-        }
+
+        cmd = kwords.get("cmd")
         if cmd in (NewBar.CMD_APPEND,):
-            message = {
-                "type": "realtime",
-                "timestamp": self.dt.isoformat(),
-                "open": self.open,
-                "close": self.close,
-                "high": self.high,
-                "low": self.low,
-                "volume": self.volume,
-                "shape": {"point": point, "options": options, "id": self.shape_id},
-            }
-            future = asyncio.run_coroutine_threadsafe(
-                Observer.queue.put(message), Observer.loop
-            )
-            try:
-                future.result()  # 确保任务已添加到队列
-            except Exception as e:
-                print(f"Error adding task to queue: {e}")
+            Observer.plot_bar(self)
 
     @classmethod
     def get_last_fx(cls) -> Optional["FenXing"]:
@@ -1015,10 +1011,10 @@ class NewBar(BaseChanObject, Observer):
                 self.low = min(self.low, next_raw_bar.low)
 
             assert next_raw_bar.index - 1 == self.elements[-1].index
-            self.notify_observer(cmd=NewBar.CMD_APPEND, obj=self)
-
+            self.update(self, cmd=NewBar.CMD_APPEND)
             self.elements.append(next_raw_bar)
             return None
+
         self.done = True
         return next_raw_bar.to_new_bar(self)
 
@@ -1057,10 +1053,6 @@ class NewBar(BaseChanObject, Observer):
 
 
 class FenXing(BaseChanObject):
-    """
-    缠论 分型
-    """
-
     __slots__ = "left", "mid", "right", "__shape", "__speck"
     OBJS: List["FenXing"] = []
 
@@ -1138,7 +1130,7 @@ class Bi(BaseChanObject, Observer):
     CMD_MODIFY = "bi_modify"
     CMD_REMOVE = "bi_remove"
 
-    __slots__ = "direction", "__start", "__end", "flag"
+    __slots__ = "direction", "__start", "__end"
 
     def __init__(
         self,
@@ -1146,7 +1138,6 @@ class Bi(BaseChanObject, Observer):
         start: FenXing,
         end: Union[FenXing, NewBar],
         elements: Optional[List[NewBar]],
-        flag: bool = True,
     ):
         super().__init__()
         if start.shape is Shape.G:
@@ -1177,12 +1168,8 @@ class Bi(BaseChanObject, Observer):
                 last.elements[-1],
                 elements[0],
             )"""
-        self.flag = flag
 
         self.attach_observer(self)  # 自我观察
-        if self.flag:
-            Bi.OBJS.append(self)
-            self.notify_observer(cmd=Bi.CMD_APPEND, obj=self)
 
     def __str__(self):
         return f"Bi({self.direction}, {colored(self.start.dt, 'green')}, {self.start.speck}, {colored(self.end.dt, 'green')}, {self.end.speck}, {self.index}, {self.elements[-1]}, fake: {self is Bi.FAKE})"
@@ -1245,34 +1232,7 @@ class Bi(BaseChanObject, Observer):
 
     @start.setter
     def start(self, start: FenXing):
-        """
-        :param start:
-        :return:
-        """
-        if start is None:
-            self.notify_observer(cmd=Bi.CMD_REMOVE, obj=self)
-            self.__start = start
-            self.elements = None
-            assert Bi.OBJS[-1] is self, Bi.OBJS[-1]
-            if self.flag:
-                Bi.OBJS.remove(self)
-            return
-        assert start.shape in (Shape.G, Shape.D)
-
-        self.__start = start
-        if self.direction is Direction.Down:
-            assert start.shape is Shape.G
-            self.high = start.speck
-
-        if self.direction is Direction.Up:
-            assert start.shape is Shape.D
-            self.low = start.speck
-
-        if self not in Bi.OBJS:
-            Bi.OBJS.append(self)
-            self.notify_observer(cmd=Bi.CMD_APPEND, obj=self)
-        else:
-            self.notify_observer(cmd=Bi.CMD_MODIFY, obj=self)
+        raise ChanException()
 
     @property
     def end(self) -> FenXing:
@@ -1362,30 +1322,6 @@ class Bi(BaseChanObject, Observer):
             return size
         return len(elements)
 
-    def __append_and_calc(self, new_bar: NewBar):
-        assert self.elements[-1].index + 1 == new_bar.index, (
-            new_bar,
-            self.elements[-1],
-        )
-        self.elements.append(new_bar)
-        if self.direction is Direction.Down:
-            old = self.low
-            if old > new_bar.low:
-                self.__end = new_bar
-            self.low = min(self.low, new_bar.low)
-            self.notify_observer(cmd=Bi.CMD_MODIFY, obj=self)
-            if self.real_high is not self.start.mid:
-                dp("不是真顶", self)
-
-        if self.direction is Direction.Up:
-            old = self.high
-            if old < new_bar.high:
-                self.__end = new_bar
-            self.high = max(self.high, new_bar.high)
-            self.notify_observer(cmd=Bi.CMD_MODIFY, obj=self)
-            if self.real_low is not self.start.mid:
-                dp("不是真底", self)
-
     def get_bsp(self) -> List[NewBar]:
         bsp = []
         for bar in self.elements:
@@ -1424,9 +1360,9 @@ class Bi(BaseChanObject, Observer):
             high = max(elememts, key=lambda x: x.high)
             pre = cls.last()
             if start.shape is Shape.G:
-                bi = Bi(pre, start, low, elememts, flag=False)
+                bi = Bi(pre, start, low, elememts)
             else:
-                bi = Bi(pre, start, high, elememts, flag=False)
+                bi = Bi(pre, start, high, elememts)
             cls.FAKE = bi
             bi.notify_observer(cmd=Bi.CMD_APPEND, obj=bi)
 
@@ -1492,7 +1428,6 @@ class Bi(BaseChanObject, Observer):
                 last,
                 fx,
                 cklines[cklines.index(last.mid) : cklines.index(fx.mid) + 1],
-                flag=False,
             )
             if bi.length > 4:
                 eq = Bi.BI_EQUAL
@@ -1532,7 +1467,6 @@ class Bi(BaseChanObject, Observer):
                             fxs[-3],
                             _bi.start,
                             cklines[fxs[-3].mid.index : _bi.start.mid.index + 1],
-                            flag=False,
                         )
                         if not nb.check():
                             return
@@ -1558,7 +1492,6 @@ class Bi(BaseChanObject, Observer):
                 last,
                 fx,
                 cklines[cklines.index(last.mid) : cklines.index(fx.mid) + 1],
-                flag=False,
             )
             if bi.length > 4:
                 eq = Bi.BI_EQUAL
@@ -1598,7 +1531,6 @@ class Bi(BaseChanObject, Observer):
                             fxs[-3],
                             _bi.start,
                             cklines[fxs[-3].mid.index : _bi.start.mid.index + 1],
-                            False,
                         )
                         if not nb.check():
                             return
@@ -1717,7 +1649,6 @@ class Bi(BaseChanObject, Observer):
                     fxs[-1],
                     fx,
                     cklines[cklines.index(fxs[-1].mid) : cklines.index(fx.mid) + 1],
-                    flag=False,
                 )
                 FenXing.append(fxs, fx)
                 Bi.append(bis, bi, _from)
@@ -1763,7 +1694,6 @@ class Bi(BaseChanObject, Observer):
                     fxs[-1],
                     fx,
                     cklines[cklines.index(fxs[-1].mid) : cklines.index(fx.mid) + 1],
-                    flag=False,
                 )
                 FenXing.append(fxs, fx)
                 Bi.append(bis, bi, _from)
@@ -1809,8 +1739,6 @@ class FeatureSequence(Observable, Observer):
         self.shape: Optional[Shape] = None
         self.index = 0
         self.attach_observer(self)
-        # self.__appended = False
-        # self.__removed = False
 
     @property
     def shape_id(self) -> str:
@@ -1821,12 +1749,10 @@ class FeatureSequence(Observable, Observer):
         self.direction = other.direction
         self.shape = other.shape
         self.index = other.index
-        self.notify_observer(cmd=FeatureSequence.CMD_MODIFY, obj=self)
+        # self.notify_observer(cmd=FeatureSequence.CMD_MODIFY, obj=self)
         return self
 
     def update(self, observable: "Observable", **kwords: Any):
-        # 实现 自我观察
-
         if not FeatureSequence.CAN:
             return
         cmd = kwords.get("cmd")
@@ -1834,7 +1760,7 @@ class FeatureSequence(Observable, Observer):
             {"time": 0, "price": 0},
             {"time": 0, "price": 0},
         ]
-        if cmd != Bi.CMD_REMOVE:
+        if cmd != FeatureSequence.CMD_REMOVE:
             points = [
                 {"time": int(self.start.dt.timestamp()), "price": self.start.speck},
                 {"time": int(self.end.dt.timestamp()), "price": self.end.speck},
@@ -2126,6 +2052,7 @@ class Duan(BaseChanObject, Observer):
                 )
             self._features[offset] = feature
             return
+
         if self._features[offset] is None:
             feature.notify_observer(cmd=FeatureSequence.CMD_APPEND, obj=feature)
             self._features[offset] = feature
@@ -2351,7 +2278,7 @@ class Duan(BaseChanObject, Observer):
             Duan.append(xds, new, _from)
             return
         duan: Duan = xds[-1]
-        state: States = duan.state
+        state = duan.state
         # last: Optional[Duan] = duan.pre
         # last = duans[-2] if len(duans) > 1 else last
         # left: Optional[FeatureSequence] = duan.left
