@@ -5,12 +5,18 @@
 # @File    : chan.py
 """
 
+import sys
 import json
 import math
 import struct
 import asyncio
 import time
 import traceback
+import collections
+from copy import copy
+import datetime
+import itertools
+from collections import OrderedDict
 
 from pathlib import Path
 from random import choice
@@ -29,7 +35,6 @@ from typing import (
     Annotated,
 )
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from importlib import reload
 from enum import Enum
 from abc import ABCMeta, abstractmethod, ABC
@@ -47,7 +52,9 @@ from termcolor import colored
 
 
 ts2int = lambda timestamp_str: int(
-    time.mktime(datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S").timetuple())
+    time.mktime(
+        datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S").timetuple()
+    )
 )
 int2ts = lambda timestamp: time.strftime(
     "%Y-%m-%d %H:%M:%S", time.localtime(int(timestamp))
@@ -178,7 +185,7 @@ def _print(*args, **kwords):
 
 def dp(*args, **kwords):
     if not 0:
-        _print(*args, **kwords)  #! jing
+        _print(*args, **kwords)
 
 
 def bdp(*args, **kwargs):
@@ -346,10 +353,14 @@ def calc_bc(left: List, right: List) -> bool:
     return sum([o.macd for o in left]) > sum([o.macd for o in right])
 
 
+class Position: ...
+
+
 class Observer(metaclass=ABCMeta):
     """观察者的基类"""
 
     CAN = False
+    USE_RAW = False
     TIME = 0.05
     queue = asyncio.Queue()
     loop = asyncio.get_event_loop()
@@ -369,6 +380,7 @@ class Observer(metaclass=ABCMeta):
             assert self._removed is False, self
             assert self._appended is True, self
             self._removed = True
+            self._appended = False
             del observable
 
         if cmd in (
@@ -377,8 +389,9 @@ class Observer(metaclass=ABCMeta):
             ZhongShu.CMD_APPEND,
             FeatureSequence.CMD_APPEND,
         ):
-            assert self._appended is False
+            assert self._appended is False, self
             self._appended = True
+            self._removed = False
         if cmd in (
             Bi.CMD_MODIFY,
             Duan.CMD_MODIFY,
@@ -386,6 +399,7 @@ class Observer(metaclass=ABCMeta):
             FeatureSequence.CMD_MODIFY,
         ):
             assert self._appended is True, self
+            assert self._removed is False, self
 
     @classmethod
     def plot_bsp(cls, _type, bar: "NewBar", bsp: BSPoint, real: bool = True):
@@ -471,19 +485,111 @@ class TVShapeID(object):
     """
 
     IDS = set()
+    SHAPES = {
+        "emoji",
+        "triangle",
+        "curve",
+        "circle",
+        "ellipse",
+        "path",
+        "polyline",
+        "text",
+        "icon",
+        "extended",
+        "anchored_text",
+        "anchored_note",
+        "note",
+        "signpost",
+        "double_curve",
+        "arc",
+        "sticker",
+        "arrow_up",
+        "arrow_down",
+        "arrow_left",
+        "arrow_right",
+        "price_label",
+        "price_note",
+        "arrow_marker",
+        "flag",
+        "vertical_line",
+        "horizontal_line",
+        "cross_line",
+        "horizontal_ray",
+        "trend_line",
+        "info_line",
+        "trend_angle",
+        "arrow",
+        "ray",
+        "parallel_channel",
+        "disjoint_angle",
+        "flat_bottom",
+        "anchored_vwap",
+        "pitchfork",
+        "schiff_pitchfork_modified",
+        "schiff_pitchfork",
+        "balloon",
+        "comment",
+        "inside_pitchfork",
+        "pitchfan",
+        "gannbox",
+        "gannbox_square",
+        "gannbox_fixed",
+        "gannbox_fan",
+        "fib_retracement",
+        "fib_trend_ext",
+        "fib_speed_resist_fan",
+        "fib_timezone",
+        "fib_trend_time",
+        "fib_circles",
+        "fib_spiral",
+        "fib_speed_resist_arcs",
+        "fib_channel",
+        "xabcd_pattern",
+        "cypher_pattern",
+        "abcd_pattern",
+        "callout",
+        "triangle_pattern",
+        "3divers_pattern",
+        "head_and_shoulders",
+        "fib_wedge",
+        "elliott_impulse_wave",
+        "elliott_triangle_wave",
+        "elliott_triple_combo",
+        "elliott_correction",
+        "elliott_double_combo",
+        "cyclic_lines",
+        "time_cycles",
+        "sine_line",
+        "long_position",
+        "short_position",
+        "forecast",
+        "date_range",
+        "price_range",
+        "date_and_price_range",
+        "bars_pattern",
+        "ghost_feed",
+        "projection",
+        "rectangle",
+        "rotated_rectangle",
+        "brush",
+        "highlighter",
+        "regression_trend",
+        "fixed_range_volume_profile",
+    }
+
     __slots__ = "__shape_id"
 
     def __init__(self):
         super().__init__()
-        s = TVShapeID.get(6)
+        s = TVShapeID.get(12)
         while s in TVShapeID.IDS:
-            s = TVShapeID.get(8)
+            s = TVShapeID.get(12)
         TVShapeID.IDS.add(s)
         self.__shape_id: str = s
 
     def __del__(self):
         TVShapeID.IDS.remove(self.__shape_id)
-        del self.__shape_id
+        self.__shape_id = None
 
     @property
     def shape_id(self) -> str:
@@ -502,6 +608,33 @@ class TVShapeID(object):
                 choice("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
                 for _ in range(size)
             ]
+        )
+
+    @classmethod
+    def intervalsVisibilities(cls):
+        return (
+            {
+                "ticks": True,
+                "seconds": True,
+                "secondsFrom": 1,
+                "secondsTo": 59,
+                "minutes": True,
+                "minutesFrom": 1,
+                "minutesTo": 59,
+                "hours": True,
+                "hoursFrom": 1,
+                "hoursTo": 24,
+                "days": True,
+                "daysFrom": 1,
+                "daysTo": 366,
+                "weeks": True,
+                "weeksFrom": 1,
+                "weeksTo": 52,
+                "months": True,
+                "monthsFrom": 1,
+                "monthsTo": 12,
+                "ranges": True,
+            },
         )
 
 
@@ -592,7 +725,14 @@ class RawBar(BaseChanObject, Observer):
     )
 
     def __init__(
-        self, dt: datetime, o: float, h: float, l: float, c: float, v: float, i: int
+        self,
+        dt: datetime.datetime,
+        o: float,
+        h: float,
+        l: float,
+        c: float,
+        v: float,
+        i: int,
     ):
         if RawBar.OBJS:
             i = RawBar.last().index + 1
@@ -643,7 +783,8 @@ class RawBar(BaseChanObject, Observer):
 
     def update(self, observer: "Observer", **kwords: Any):
         cmd = kwords.get("cmd")
-        return
+        if not Observer.USE_RAW:
+            return
 
         if cmd in (RawBar.CMD_APPEND,):
             message = {
@@ -680,7 +821,7 @@ class RawBar(BaseChanObject, Observer):
             ">6d", buf[: struct.calcsize(">6d")]
         )
         return cls(
-            dt=datetime.fromtimestamp(timestamp),
+            dt=datetime.datetime.fromtimestamp(timestamp),
             o=open,
             h=high,
             l=low,
@@ -737,7 +878,7 @@ class NewBar(BaseChanObject, Observer):
 
     def __init__(
         self,
-        dt: datetime,
+        dt: datetime.datetime,
         high: float,
         low: float,
         elements: List[RawBar],
@@ -777,8 +918,9 @@ class NewBar(BaseChanObject, Observer):
 
     def update(self, observable: "Observable", **kwords: Any):
         cmd = kwords.get("cmd")
-        # return
         # https://www.tradingview.com/charting-library-docs/v26/api/interfaces/Charting_Library.CreateShapeOptions/
+        if Observer.USE_RAW:
+            return
         point = {"time": int(self.dt.timestamp())}
         options = {
             "shape": "arrow_up" if self.direction is Direction.Up else "arrow_down",
@@ -938,7 +1080,7 @@ class FenXing(BaseChanObject):
         self.done = True
 
     @property
-    def dt(self) -> datetime:
+    def dt(self) -> datetime.datetime:
         return self.mid.dt
 
     @property
@@ -990,6 +1132,7 @@ class Bi(BaseChanObject, Observer):
 
     BI_LENGTH = 5  # 成BI最低长度
     BI_JUMP = True  # 跳空是否是一个NewBar
+    BI_EQUAL = True  # True: 一笔终点存在多个终点时，取最后一个, False: 用max/min时只会取第一个值，会有这个情况 当首个出现时 小于[BI_LENGTH]而后个则大于[BI_LENGTH]但max/min函数不会取后一个. 例子: bitstamp btcusd 30m [2024-06-03 17:00]至[2024-06-05 01:00] 中 [NewBar(63, 2024-06-03 22:30:00, 69318.0, 68553.0, D, 2), NewBar(94, 2024-06-04 17:30:00, 68768.0, 68553.0, D, 1)]
     BI_FENGXING = False  # True: 一笔起始分型高低包含整支笔对象则不成笔, False: 只判断分型中间数据是否包含
     CMD_APPEND = "bi_append"
     CMD_MODIFY = "bi_modify"
@@ -1152,12 +1295,37 @@ class Bi(BaseChanObject, Observer):
             self.notify_observer(cmd=Bi.CMD_MODIFY, obj=self)
 
     @property
-    def real_high(self) -> NewBar:
-        return max(self.elements, key=lambda x: x.high) if self.elements else None
+    def real_high(self) -> Optional[NewBar]:
+        if not self.elements:
+            return None
+        if Bi.BI_EQUAL:
+            high = [self.elements[0]]
+            for bar in self.elements[1:]:
+                if bar.high >= high[-1].high:
+                    if bar.high > high[-1].high:
+                        high.clear()
+                    high.append(bar)
+            if len(high) > 1:
+                dp("", high)
+            return high[-1]
+
+        return max(self.elements, key=lambda x: x.high)
 
     @property
-    def real_low(self) -> NewBar:
-        return min(self.elements, key=lambda x: x.low) if self.elements else None
+    def real_low(self) -> Optional[NewBar]:
+        if not self.elements:
+            return None
+        if Bi.BI_EQUAL:
+            low = [self.elements[0]]
+            for bar in self.elements[1:]:
+                if bar.low <= low[-1].low:
+                    if bar.low < low[-1].low:
+                        low.clear()
+                    low.append(bar)
+            if len(low) > 1:
+                dp("", low)
+            return low[-1]
+        return min(self.elements, key=lambda x: x.low)
 
     @property
     def relation(self) -> bool:
@@ -1265,7 +1433,7 @@ class Bi(BaseChanObject, Observer):
     @staticmethod
     def append(bis, bi, _from):
         if bis and bis[-1].end is not bi.start:
-            raise TypeError("笔连续性错误")
+            raise ChanException("笔连续性错误")
         i = 0
         pre = None
         if bis:
@@ -1292,7 +1460,7 @@ class Bi(BaseChanObject, Observer):
                     Duan.analyzer_pop(bi, Duan.OBJS, 0, _from)
                 return bi
             else:
-                raise ValueError("最后一笔终点错误", fx, bis[-1].end)
+                raise ChanException("最后一笔终点错误", fx, bis[-1].end)
 
     @staticmethod
     def analyzer(
@@ -1301,19 +1469,22 @@ class Bi(BaseChanObject, Observer):
         bis: List["Bi"],
         cklines: List[NewBar],
         _from: str = "analyzer",
+        level=0,
     ):
+        bdp(level, fx.mid, _from)
         last = fxs[-1] if fxs else None
         left, mid, right = fx.left, fx.mid, fx.right
         if Bi.FAKE:
             Bi.FAKE.notify_observer(cmd=Bi.CMD_REMOVE, obj=Bi.FAKE)
             Bi.FAKE = None
+
         if last is None:
             if mid.shape in (Shape.G, Shape.D):
                 fxs.append(fx)
             return
 
         if last.mid.dt > fx.mid.dt:
-            raise TypeError("时序错误")
+            raise ChanException("时序错误")
 
         if last.shape is Shape.G and fx.shape is Shape.D:
             bi = Bi(
@@ -1324,6 +1495,8 @@ class Bi(BaseChanObject, Observer):
                 flag=False,
             )
             if bi.length > 4:
+                eq = Bi.BI_EQUAL
+                Bi.BI_EQUAL = False  # 起始点检测时不考虑相同起始点情况，避免递归
                 if bi.real_high is not last.mid:
                     # print("不是真顶")
                     top = bi.real_high
@@ -1333,10 +1506,15 @@ class Bi(BaseChanObject, Observer):
                         cklines[cklines.index(top) + 1],
                     )
                     assert new.shape is Shape.G, new
-                    Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新顶
-                    Bi.analyzer(fx, fxs, bis, cklines, _from)  # 再处理当前底
-
+                    Bi.analyzer(
+                        new, fxs, bis, cklines, _from, level=level + 1
+                    )  # 处理新顶
+                    Bi.analyzer(
+                        fx, fxs, bis, cklines, _from, level=level + 1
+                    )  # 再处理当前底
+                    Bi.BI_EQUAL = eq
                     return
+                Bi.BI_EQUAL = eq
                 flag = bi.relation
                 if flag and fx.mid is bi.real_low:
                     FenXing.append(fxs, fx)
@@ -1362,7 +1540,9 @@ class Bi(BaseChanObject, Observer):
                         tmp = fxs.pop()
                         assert tmp is last
                         Bi.pop(bis, tmp, _from)
-                        Bi.analyzer(_bi.start, fxs, bis, cklines, _from)
+                        Bi.analyzer(
+                            _bi.start, fxs, bis, cklines, _from, level=level + 1
+                        )
 
             else:
                 ...
@@ -1381,6 +1561,8 @@ class Bi(BaseChanObject, Observer):
                 flag=False,
             )
             if bi.length > 4:
+                eq = Bi.BI_EQUAL
+                Bi.BI_EQUAL = False  # 起始点检测时不考虑相同起始点情况，避免递归
                 if bi.real_low is not last.mid:
                     # print("不是真底")
                     bottom = bi.real_low
@@ -1390,9 +1572,15 @@ class Bi(BaseChanObject, Observer):
                         cklines[cklines.index(bottom) + 1],
                     )
                     assert new.shape is Shape.D, new
-                    Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新底
-                    Bi.analyzer(fx, fxs, bis, cklines, _from)  # 再处理当前顶
+                    Bi.analyzer(
+                        new, fxs, bis, cklines, _from, level=level + 1
+                    )  # 处理新底
+                    Bi.analyzer(
+                        fx, fxs, bis, cklines, _from, level=level + 1
+                    )  # 再处理当前顶
+                    Bi.BI_EQUAL = eq
                     return
+                Bi.BI_EQUAL = eq
                 flag = bi.relation
                 if flag and fx.mid is bi.real_high:
                     FenXing.append(fxs, fx)
@@ -1418,7 +1606,9 @@ class Bi(BaseChanObject, Observer):
                         tmp = fxs.pop()
                         assert tmp is last
                         Bi.pop(bis, tmp, _from)
-                        Bi.analyzer(_bi.start, fxs, bis, cklines, _from)
+                        Bi.analyzer(
+                            _bi.start, fxs, bis, cklines, _from, level=level + 1
+                        )
 
             else:
                 ...
@@ -1452,7 +1642,9 @@ class Bi(BaseChanObject, Observer):
                             cklines[cklines.index(bottom) + 1],
                         )
                         assert new.shape is Shape.D, new
-                        Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新底
+                        Bi.analyzer(
+                            new, fxs, bis, cklines, _from, level=level + 1
+                        )  # 处理新底
                         # print("GS修正")
 
         elif last.shape is Shape.D and fx.shape is Shape.X:
@@ -1479,7 +1671,9 @@ class Bi(BaseChanObject, Observer):
                             cklines[cklines.index(top) + 1],
                         )
                         assert new.shape is Shape.G, new
-                        Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新顶
+                        Bi.analyzer(
+                            new, fxs, bis, cklines, _from, level=level + 1
+                        )  # 处理新顶
                         # print("DX修正")
 
         elif last.shape is Shape.G and fx.shape is Shape.G:
@@ -1506,8 +1700,12 @@ class Bi(BaseChanObject, Observer):
                             cklines[cklines.index(bottom) + 1],
                         )
                         assert new.shape is Shape.D, new
-                        Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新底
-                        Bi.analyzer(fx, fxs, bis, cklines, _from)  # 再处理当前顶
+                        Bi.analyzer(
+                            new, fxs, bis, cklines, _from, level=level + 1
+                        )  # 处理新底
+                        Bi.analyzer(
+                            fx, fxs, bis, cklines, _from, level=level + 1
+                        )  # 再处理当前顶
                         # print("GG修正")
                         return
 
@@ -1548,8 +1746,12 @@ class Bi(BaseChanObject, Observer):
                             cklines[cklines.index(top) + 1],
                         )
                         assert new.shape is Shape.G, new
-                        Bi.analyzer(new, fxs, bis, cklines, _from)  # 处理新顶
-                        Bi.analyzer(fx, fxs, bis, cklines, _from)  # 再处理当前底
+                        Bi.analyzer(
+                            new, fxs, bis, cklines, _from, level=level + 1
+                        )  # 处理新顶
+                        Bi.analyzer(
+                            fx, fxs, bis, cklines, _from, level=level + 1
+                        )  # 再处理当前底
                         # print("DD修正")
                         return
 
@@ -1571,7 +1773,7 @@ class Bi(BaseChanObject, Observer):
         elif last.shape is Shape.D and fx.shape is Shape.S:
             ...
         else:
-            raise ValueError(last.shape, fx.shape)
+            raise ChanException(last.shape, fx.shape)
 
     def analysis_one(cklines: List[NewBar]) -> tuple[Optional[FenXing], Optional["Bi"]]:
         try:
@@ -1789,6 +1991,7 @@ class FeatureSequence(Observable, Observer):
 
 class Duan(BaseChanObject, Observer):
     OBJS: List["Duan"] = []
+    DUAN_OBJS: List["Duan"] = []  # 段的段
     FAKE = None
     CMD_APPEND = "duan_append"
     CMD_MODIFY = "duan_modify"
@@ -1804,6 +2007,7 @@ class Duan(BaseChanObject, Observer):
         elements: List[Bi],
     ) -> None:
         super().__init__()
+        self._type = elements[-1].__class__.__name__
         self._features: list[Optional[FeatureSequence]] = [None, None, None]
         if start.shape is Shape.G:
             self.direction = Direction.Down
@@ -1834,6 +2038,12 @@ class Duan(BaseChanObject, Observer):
     def update(self, observable: "Observable", **kwords: Any):
         # 实现 自我观察
         cmd = kwords.get("cmd")
+        obj = kwords.get("obj")
+        if cmd == f"Duan_{BaseChanObject.CMD_DONE}":
+            Duan.DUAN_OBJS and Duan.DUAN_OBJS[-1].notify_observer(
+                cmd=Duan.CMD_MODIFY, obj=Duan.DUAN_OBJS[-1]
+            )
+
         points = [
             {"time": int(self.start.dt.timestamp()), "price": self.start.speck},
             {
@@ -1852,7 +2062,7 @@ class Duan(BaseChanObject, Observer):
             "text": "duan",
         }
         properties = {
-            "linecolor": "#F1C40F",
+            "linecolor": "#F1C40F" if self._type == "Bi" else "#00C40F",
             "linewidth": 3,
             "title": f"Duan-{self.index}",
             "text": "duan",
@@ -1884,10 +2094,10 @@ class Duan(BaseChanObject, Observer):
         super().update(observable, **kwords)
 
     def __str__(self):
-        return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None}, {self.start}, {self.end})"
+        return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None}, {self.start}, {self.end}, {self._type})"
 
     def __repr__(self):
-        return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None}, {self.start}, {self.end})"
+        return f"Duan({self.index}, {self.direction}, {len(self.elements)}, 完成否:{self.done}, {self.pre is not None}, {self.start}, {self.end}, {self._type})"
 
     @property
     def lmr(self) -> tuple[bool, bool, bool]:
@@ -1974,7 +2184,7 @@ class Duan(BaseChanObject, Observer):
         elif self.direction is Direction.Down:
             self.low = end.speck
         else:
-            raise
+            raise ChanException
         self.notify_observer(cmd=Duan.CMD_MODIFY, obj=self)
 
     def get_elements(self) -> Iterable[Bi]:
@@ -2059,7 +2269,7 @@ class Duan(BaseChanObject, Observer):
     @staticmethod
     def append(xds, duan, _from):
         if xds and xds[-1].end is not duan.start:
-            raise TypeError("线段连续性错误")
+            raise ChanException("线段连续性错误")
         i = 0
         pre = None
         if xds:
@@ -2067,22 +2277,38 @@ class Duan(BaseChanObject, Observer):
             pre = xds[-1]
         duan.index = i
         duan.pre = pre
+
         xds.append(duan)
         if _from == "analyzer":
             duan.notify_observer(cmd=Duan.CMD_APPEND, obj=duan)
-        ZhongShu.analyzer_push(duan, ZhongShu.DUAN_OBJS, Duan.OBJS, 0, _from)
+
+        zss = ZhongShu.DUAN_OBJS
+        if duan._type == "Duan":
+            zss = ZhongShu.DUAN_DUAN_OBJS
+        ZhongShu.analyzer_push(duan, zss, xds, 0, _from)
+
+        # if duan._type == "Bi":
+        #    Duan.analyzer_append(duan, Duan.DUAN_OBJS, 0, _from)
 
     @staticmethod
     def pop(xds, duan, _from):
-        if xds:
-            if xds[-1] is duan:
-                duan = xds.pop()
-                if _from == "analyzer":
-                    duan.notify_observer(cmd=Duan.CMD_REMOVE, obj=duan)
-                ZhongShu.analyzer_pop(duan, ZhongShu.DUAN_OBJS, 0, _from)
-                return duan
-            else:
-                raise ValueError
+        if not xds:
+            return
+        if not (xds[-1] is duan):
+            raise ChanException
+
+        duan = xds.pop()
+        if _from == "analyzer":
+            duan.notify_observer(cmd=Duan.CMD_REMOVE, obj=duan)
+
+        zss = ZhongShu.DUAN_OBJS
+        if duan._type == "Duan":
+            zss = ZhongShu.DUAN_DUAN_OBJS
+        ZhongShu.analyzer_pop(duan, zss, 0, _from)
+
+        # if duan._type == "Bi":
+        #    Duan.analyzer_pop(duan, Duan.DUAN_OBJS, 0, _from)
+        return duan
 
     @staticmethod
     def analyzer_pop(bi, xds: List["Duan"], level, _from):
@@ -2126,10 +2352,10 @@ class Duan(BaseChanObject, Observer):
             return
         duan: Duan = xds[-1]
         state: States = duan.state
-        last: Optional[Duan] = duan.pre
+        # last: Optional[Duan] = duan.pre
         # last = duans[-2] if len(duans) > 1 else last
-        left: Optional[FeatureSequence] = duan.left
-        mid: Optional[FeatureSequence] = duan.mid
+        # left: Optional[FeatureSequence] = duan.left
+        # mid: Optional[FeatureSequence] = duan.mid
         # right: Optional[FeatureSequence] = duan.features[2]
         lmr: Tuple[bool, bool, bool] = duan.lmr
 
@@ -2178,6 +2404,8 @@ class Duan(BaseChanObject, Observer):
         duan.append_element(bi)
         l, m, r = duan.get_features()
         if r:
+            # Duan.pop(xds, duan, _from)
+            # Duan.append(xds, duan, _from)
             elements = duan.set_done(m.start)
             new = Duan(duan, elements[0].start, elements[-1].end, elements)
             Duan.append(xds, new, _from)
@@ -2197,6 +2425,7 @@ class ZhongShu(BaseChanObject, Observer):
     OBJS: List["ZhongShu"] = []
     BI_OBJS: List["ZhongShu"] = []
     DUAN_OBJS: List["ZhongShu"] = []
+    DUAN_DUAN_OBJS: List["ZhongShu"] = []
     TYPE: Tuple["str"] = ("Bi", "Duan", "ZouShi")
 
     CMD_APPEND = "zs_append"
@@ -2571,18 +2800,19 @@ class ZhongShu(BaseChanObject, Observer):
         i = 0
         if zss:
             i = zss[-1].index + 1
-        zss.append(zs)
         zs.index = i
+        zss.append(zs)
         if _from == "analyzer":
             zs.notify_observer(cmd=ZhongShu.CMD_APPEND, obj=zs)
 
     @staticmethod
-    def pop(zss: List["ZhongShu"], zs: "ZhongShu", _from) -> "ZhongShu":
-        if zss:
-            if zss[-1] is zs:
-                if _from == "analyzer":
-                    zs.notify_observer(cmd=ZhongShu.CMD_REMOVE, obj=zs)
-                return zss.pop()
+    def pop(zss: List["ZhongShu"], zs: "ZhongShu", _from) -> Optional["ZhongShu"]:
+        if not zss:
+            return
+        if zss[-1] is zs:
+            if _from == "analyzer":
+                zs.notify_observer(cmd=ZhongShu.CMD_REMOVE, obj=zs)
+            return zss.pop()
 
     @staticmethod
     def analyzer_pop(obj: Union[Bi, Duan], zss: List["ZhongShu"], level: int, _from):
@@ -2724,7 +2954,7 @@ class ZouShi(BaseChanObject, Observer):
 
 class KlineGenerator:
     def __init__(self, arr=[3, 2, 5, 3, 7, 4, 7, 2.5, 5, 4, 8, 6]):
-        self.dt = datetime(2021, 9, 3, 19, 50, 40, 916152)
+        self.dt = datetime.datetime(2021, 9, 3, 19, 50, 40, 916152)
         self.arr = arr
 
     def up(self, start, end, size=8):
@@ -2738,7 +2968,7 @@ class KlineGenerator:
             yield RawBar(self.dt, o, c, o, c, 1)
             o = c
             n += 1
-            self.dt = datetime.fromtimestamp(self.dt.timestamp() + 60 * 60)
+            self.dt = datetime.datetime.fromtimestamp(self.dt.timestamp() + 60 * 60)
 
     def down(self, start, end, size=8):
         n = 0
@@ -2751,7 +2981,7 @@ class KlineGenerator:
             yield RawBar(self.dt, o, o, c, c, 1)
             o = c
             n += 1
-            self.dt = datetime.fromtimestamp(self.dt.timestamp() + 60 * 60)
+            self.dt = datetime.datetime.fromtimestamp(self.dt.timestamp() + 60 * 60)
 
     @property
     def result(self):
@@ -2793,9 +3023,11 @@ class BaseAnalyzer:
         Bi.OBJS = []
         Bi.FAKE = None
         Duan.OBJS = []
+        Duan.DUAN_OBJS = []
         ZhongShu.OBJS = []
         ZhongShu.BI_OBJS = []
         ZhongShu.DUAN_OBJS = []
+        ZhongShu.DUAN_DUAN_OBJS = []
         self._raws: List[RawBar] = RawBar.OBJS  # 原始K线列表
         self._news: List[NewBar] = NewBar.OBJS  # 去除包含关系K线列表
         self._fxs: List[FenXing] = FenXing.OBJS  # 分型列表
@@ -2967,19 +3199,19 @@ class CZSCAnalyzer:
     @final
     def step(
         self,
-        dt: datetime | int | str,
+        dt: datetime.datetime | int | str,
         open: float | str,
         high: float | str,
         low: float | str,
         close: float | str,
         volume: float | str,
     ):
-        if type(dt) is datetime:
+        if type(dt) is datetime.datetime:
             ...
         elif isinstance(dt, str):
-            dt: datetime = datetime.fromtimestamp(int(dt))
+            dt: datetime.datetime = datetime.datetime.fromtimestamp(int(dt))
         elif isinstance(dt, int):
-            dt: datetime = datetime.fromtimestamp(dt)
+            dt: datetime.datetime = datetime.datetime.fromtimestamp(dt)
         else:
             raise ChanException("类型不支持", type(dt))
         open = float(open)
@@ -3064,10 +3296,10 @@ class Bitstamp(CZSCAnalyzer):
             super().__init__(symbol, int(freq))
             self.freq: int = int(freq)
         else:
-            raise
+            raise ChanException
 
     def init(self, size):
-        self.left_date_timestamp: int = int(datetime.now().timestamp() * 1000)
+        self.left_date_timestamp: int = int(datetime.datetime.now().timestamp() * 1000)
         left = int(self.left_date_timestamp / 1000) - self.freq * size
         if left < 0:
             raise ChanException
@@ -3285,9 +3517,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     Bi.OBJS = []
                     Bi.FAKE = None
                     Duan.OBJS = []
+                    Duan.DUAN_OBJS = []
                     ZhongShu.OBJS = []
                     ZhongShu.BI_OBJS = []
                     ZhongShu.DUAN_OBJS = []
+                    ZhongShu.DUAN_DUAN_OBJS = []
                     tmp.join(1)
                     time.sleep(1)
 
@@ -3331,6 +3565,10 @@ async def main_page(
     if resolutions.get(step) is None:
         return resolutions
 
+    exchange = "bitstamp"
+
+    # if not (symbol in ("btcusd", )):
+    #    return resolutions
     print(request.base_url)
     Observer.CAN = True
     charting_library = str(
@@ -3348,18 +3586,18 @@ async def main_page(
         const shape_ids = new Array(); // id 映射
         const debug = false;
         const exchange = "$exchange$";
-        const ticker = '$symbol$';
-        const name = ticker;//'BTCUSD'
-        const description = ticker;//'Bitcoin/USD'
-        const interval = '$interval$';
+        const ticker = "$symbol$";
+        const name = ticker;//"BTCUSD"
+        const description = ticker;//"Bitcoin/USD"
+        const interval = "$interval$";
         const step = "$step$";
         const limit = "$limit$";
-        const socket = new WebSocket('ws://localhost:8080/ws');
+        const socket = new WebSocket("ws://localhost:8080/ws");
 
         socket.onopen = () => {
             console.log("WebSocket connection established");
             socket.send(JSON.stringify({
-                type: 'ready',
+                type: "ready",
                 exchange: exchange,
                 symbol: name,
                 freq: step,
@@ -3384,7 +3622,7 @@ async def main_page(
                     supports_marks: false,
                     supports_timescale_marks: true,
                     supports_time: true,
-                    supported_resolutions: [interval,],//['1s', '1', '3', '5', '6', '12', '24', '30', '48', '64', '128', '1H', '2H', '3H', '4H', '6H', '8H', '12H', '36H', '1D', '2D', '3D', '5D', '12D', '1W'],
+                    supported_resolutions: [interval,],//["1s", "1", "3", "5", "6", "12", "24", "30", "48", "64", "128", "1H", "2H", "3H", "4H", "6H", "8H", "12H", "36H", "1D", "2D", "3D", "5D", "12D", "1W"],
                 }));
             },
 
@@ -3412,22 +3650,22 @@ async def main_page(
                     name: name,
                     description: description,
                     type: "",
-                    session: '24x7',
-                    timezone: 'Asia/Shanghai',
+                    session: "24x7",
+                    timezone: "Asia/Shanghai",
                     minmov: 1,
                     pricescale: 100000000, // 精度 数值越高小数点
-                    visible_plots_set: 'ohlcv',
+                    visible_plots_set: "ohlcv",
                     has_no_volume: true,
                     has_weekly_and_monthly: false, // 周线 月线
-                    supported_resolutions: ['1', '3', '5', '15', '30', '1H', '2H', '4H', '6H', '12H', '1D', '3D'],
+                    supported_resolutions: ["1", "3", "5", "15", "30", "1H", "2H", "4H", "6H", "12H", "1D", "3D"],
                     volume_precision: 1,
-                    data_status: 'streaming',
+                    data_status: "streaming",
                     has_intraday: true,
-                    //intraday_multipliers: [5,], //['1', "3", "5", '15', "30", '60', "120", "240", "360", "720"],
+                    //intraday_multipliers: [5,], //["1", "3", "5", "15", "30", "60", "120", "240", "360", "720"],
                     has_seconds: false,
-                    //seconds_multipliers: ['1S',],
+                    //seconds_multipliers: ["1S",],
                     has_daily: true,
-                    //daily_multipliers: ['1', '3'],
+                    //daily_multipliers: ["1", "3"],
                     has_ticks: true,
                     monthly_multipliers: [],
                     weekly_multipliers: [],
@@ -3580,9 +3818,9 @@ async def main_page(
                 locale: "zh",
                 theme: "dark",
                 debug: false,
-                timeframe: '3D',
-                user_id: 'public_user_id',
-                client_id: 'yourserver.com',
+                timeframe: "3D",
+                user_id: "public_user_id",
+                client_id: "yourserver.com",
                 favorites: {
                     intervals: ["1", "3", "5"],
                     drawingTools: ["LineToolPath", "LineToolRectangle", "LineToolTrendLine"],
@@ -3603,16 +3841,16 @@ async def main_page(
                 ],
             }));
             widget.headerReady().then(function () {
-                //widget.activeChart().createStudy('MACD');
+                //widget.activeChart().createStudy("MACD");
 
                 function createHeaderButton(text, title, clickHandler, options) {
                     const button = widget.createButton(options);
-                    button.setAttribute('title', title);
+                    button.setAttribute("title", title);
                     button.textContent = text;
-                    button.addEventListener('click', clickHandler);
+                    button.addEventListener("click", clickHandler);
                 }
 
-                createHeaderButton('笔买卖点', '显示隐藏买卖点', function () {
+                createHeaderButton("笔买卖点", "显示隐藏买卖点", function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
                         if (name === "arrow_up" || name === "arrow_down") {
                             const shape = window.tvWidget.chart().getShapeById(id);
@@ -3625,7 +3863,7 @@ async def main_page(
                     });
                 });
 
-                createHeaderButton('段买卖点', '显示隐藏买卖点', function () {
+                createHeaderButton("段买卖点", "显示隐藏买卖点", function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
                         if (name === "arrow_up" || name === "arrow_down") {
                             const shape = window.tvWidget.chart().getShapeById(id);
@@ -3638,7 +3876,7 @@ async def main_page(
                     });
                 });
 
-                createHeaderButton('特征序列', '显示隐藏特征序列', function () {
+                createHeaderButton("特征序列", "显示隐藏特征序列", function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
                         if (name === "trend_line") {
                             const shape = window.tvWidget.chart().getShapeById(id);
@@ -3649,7 +3887,7 @@ async def main_page(
                     });
                 });
 
-                createHeaderButton('笔', '显示隐藏笔', function () {
+                createHeaderButton("笔", "显示隐藏笔", function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
                         if (name === "trend_line") {
                             const shape = window.tvWidget.chart().getShapeById(id);
@@ -3659,7 +3897,7 @@ async def main_page(
                         }
                     });
                 });
-                createHeaderButton('段', '显示隐藏段', function () {
+                createHeaderButton("段", "显示隐藏段", function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
                         if (name === "trend_line") {
                             const shape = window.tvWidget.chart().getShapeById(id);
@@ -3669,7 +3907,7 @@ async def main_page(
                         }
                     });
                 });
-                createHeaderButton('笔中枢', '显示隐藏笔中枢', function () {
+                createHeaderButton("笔中枢", "显示隐藏笔中枢", function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
                         if (name === "rectangle") {
                             const shape = window.tvWidget.chart().getShapeById(id);
@@ -3679,7 +3917,7 @@ async def main_page(
                         }
                     });
                 });
-                createHeaderButton('段中枢', '显示隐藏段中枢', function () {
+                createHeaderButton("段中枢", "显示隐藏段中枢", function () {
                     widget.activeChart().getAllShapes().forEach(({name, id}) => {
                         if (name === "rectangle") {
                             const shape = window.tvWidget.chart().getShapeById(id);
@@ -3690,6 +3928,10 @@ async def main_page(
                     });
                 });
                 widget.onChartReady(function () {
+                    // https://www.tradingview.com/charting-library-docs/v26/api/interfaces/Charting_Library.SubscribeEventsMap/
+                    widget.subscribe("onTimescaleMarkClick", function (clientX, clientY, pageX, pageY, screenX, screenY) {
+                        console.log("[onTimescaleMarkClick]", clientX, clientY, pageX, pageY, screenX, screenY)
+                    })
                     widget.subscribe("drawing_event", function (sourceId, drawingEventType) {
                         // properties_changed, remove, points_changed, click
                         if (debug) console.log("[drawing_event]", "id:", sourceId, "event type:", drawingEventType)
@@ -3698,7 +3940,7 @@ async def main_page(
                             const properties = shape.getProperties();
                             const points = shape.getPoints();
                             const toolname = shape._source.toolname;
-                            if (toolname === 'LineToolTrendLine') {
+                            if (toolname === "LineToolTrendLine") {
                                 shape.setProperties({showLabel: !properties.showLabel})
                             }
                             console.log(toolname, points, properties);
